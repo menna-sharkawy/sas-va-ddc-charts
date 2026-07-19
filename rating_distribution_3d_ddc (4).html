@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Rating Distribution 3D - DDC</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    font-family: "Segoe UI", Arial, sans-serif;
+    background: transparent;
+    overflow: hidden;
+  }
+  #wrapper {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    padding: 4px;
+  }
+  #chartArea {
+    position: relative;
+    width: 100%;
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+  #donutSvg { width: 100%; height: 100%; display: block; }
+  #centerLabel {
+    position: absolute;
+    top: 44%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    text-align: center;
+    pointer-events: none;
+  }
+  #centerLabel .pct {
+    font-size: 22px;
+    font-weight: 700;
+    color: #1a1a2e;
+    line-height: 1.1;
+  }
+  #centerLabel .sub {
+    font-size: 9px;
+    letter-spacing: 0.5px;
+    color: #8a8a99;
+    text-transform: uppercase;
+  }
+  #legend {
+    display: flex;
+    gap: 18px;
+    flex-wrap: wrap;
+    justify-content: center;
+    padding-top: 4px;
+    font-size: 11px;
+    color: #333;
+  }
+  .legend-item { display: flex; align-items: center; gap: 6px; }
+  .swatch { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+  .legend-item b { margin-left: 3px; }
+  .legend-item .pct-tag { color: #999; font-size: 10px; }
+  #tooltip {
+    position: fixed;
+    display: none;
+    pointer-events: none;
+    background: rgba(30, 30, 45, 0.92);
+    color: #fff;
+    padding: 6px 10px;
+    border-radius: 6px;
+    font-size: 11px;
+    line-height: 1.5;
+    white-space: nowrap;
+    z-index: 1000;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+  }
+  #tooltip .tt-title { font-weight: 700; margin-bottom: 1px; }
+  #tooltip .tt-swatch {
+    display: inline-block;
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    margin-right: 5px;
+  }
+  .seg-top { transition: filter 0.15s ease; }
+  .seg-top:hover { filter: brightness(1.08); }
+</style>
+</head>
+<body>
+
+<div id="wrapper">
+  <div id="chartArea">
+    <svg id="donutSvg" viewBox="0 0 340 300" preserveAspectRatio="xMidYMid meet"></svg>
+    <div id="centerLabel">
+      <div class="pct" id="pctText">--%</div>
+      <div class="sub" id="pctSubText">SLA MET</div>
+    </div>
+  </div>
+  <div id="legend"></div>
+</div>
+
+<div id="tooltip"></div>
+
+<script>
+/* ===========================================================
+   CONFIG
+=========================================================== */
+/* Colors are assigned by POSITION, not by label — so any category
+   set (Male/Female, regions, statuses, anything) gets colored
+   automatically without editing this file each time.
+   Add more hex codes here if you expect more than 8 categories. */
+var COLOR_PALETTE = [
+  "#3b82f6", // blue
+  "#ec4899", // pink
+  "#22c55e", // green
+  "#f2a93b", // orange
+  "#ef4444", // red
+  "#a855f7", // purple
+  "#14b8a6", // teal
+  "#eab308"  // yellow
+];
+
+/* Optional: force a specific category to a specific color,
+   regardless of position (leave empty {} to skip this). */
+var CATEGORY_COLOR_OVERRIDES = {
+  // "Male": "#3b82f6",
+  // "Female": "#ec4899"
+};
+
+var CENTER_METRIC_LABEL = "SLA MET";
+/* Which category drives the big center %. Leave as "" to
+   automatically use whichever category has the highest value. */
+var CENTER_METRIC_CATEGORY = "";
+
+var sampleData = {
+  labels: ["Category A", "Category B", "Category C"],
+  values: [2320, 2147, 627]
+};
+
+/* ===========================================================
+   3D GEOMETRY HELPERS
+=========================================================== */
+var CX = 170, CY = 122, R_OUTER = 134, R_INNER = 74, DEPTH = 26, SQUASH = 0.56;
+
+function polar(angleDeg, radius) {
+  var rad = (angleDeg - 90) * Math.PI / 180;
+  var x = CX + radius * Math.cos(rad);
+  var y = CY + radius * Math.sin(rad) * SQUASH;
+  return [x, y];
+}
+
+function shadeColor(hex, percent) {
+  var f = parseInt(hex.slice(1), 16),
+      t = percent < 0 ? 0 : 255,
+      p = percent < 0 ? -percent : percent,
+      R = f >> 16, G = (f >> 8) & 0x00FF, B = f & 0x0000FF;
+  return "#" + (0x1000000 +
+    (Math.round((t - R) * p / 100) + R) * 0x10000 +
+    (Math.round((t - G) * p / 100) + G) * 0x100 +
+    (Math.round((t - B) * p / 100) + B)
+  ).toString(16).slice(1);
+}
+
+function ringPath(a1, a2, rOuter, rInner) {
+  var steps = Math.max(2, Math.ceil(Math.abs(a2 - a1) / 3));
+  var d = "";
+  for (var i = 0; i <= steps; i++) {
+    var a = a1 + (a2 - a1) * (i / steps);
+    var p = polar(a, rOuter);
+    d += (i === 0 ? "M" : "L") + p[0].toFixed(2) + "," + p[1].toFixed(2) + " ";
+  }
+  for (var j = steps; j >= 0; j--) {
+    var a2b = a1 + (a2 - a1) * (j / steps);
+    var p2 = polar(a2b, rInner);
+    d += "L" + p2[0].toFixed(2) + "," + p2[1].toFixed(2) + " ";
+  }
+  return d + "Z";
+}
+
+function clipFront(a1, a2) {
+  var lo = Math.max(a1, 0), hi = Math.min(a2, 180);
+  return lo >= hi ? null : [lo, hi];
+}
+
+function wallPath(a1, a2, radius) {
+  var clipped = clipFront(a1, a2);
+  if (!clipped) return null;
+  var c1 = clipped[0], c2 = clipped[1];
+  var steps = Math.max(2, Math.ceil((c2 - c1) / 3));
+  var pts = [];
+  for (var i = 0; i <= steps; i++) {
+    var a = c1 + (c2 - c1) * (i / steps);
+    pts.push(polar(a, radius));
+  }
+  var d = "M" + pts[0][0].toFixed(2) + "," + pts[0][1].toFixed(2) + " ";
+  for (var k = 1; k < pts.length; k++) d += "L" + pts[k][0].toFixed(2) + "," + pts[k][1].toFixed(2) + " ";
+  for (var m = pts.length - 1; m >= 0; m--) d += "L" + pts[m][0].toFixed(2) + "," + (pts[m][1] + DEPTH).toFixed(2) + " ";
+  return d + "Z";
+}
+
+/* ===========================================================
+   MAIN RENDER
+=========================================================== */
+function renderDonut3D(labels, values) {
+  var total = values.reduce(function (a, b) { return a + b; }, 0);
+  var angle = 0;
+  var segs = labels.map(function (label, i) {
+    var val = values[i];
+    var sweep = total ? (val / total * 360) : 0;
+    var color = CATEGORY_COLOR_OVERRIDES[label] || COLOR_PALETTE[i % COLOR_PALETTE.length];
+    var seg = { label: label, value: val, color: color, a1: angle, a2: angle + sweep };
+    angle += sweep;
+    return seg;
+  });
+
+  var defs = "", wallsOuter = "", wallsInner = "", tops = "";
+
+  segs.forEach(function (seg, i) {
+    var gid = "grad" + i;
+    var light = shadeColor(seg.color, 20);
+    defs += '<linearGradient id="' + gid + '" x1="0%" y1="0%" x2="100%" y2="100%">' +
+              '<stop offset="0%" stop-color="' + light + '"/>' +
+              '<stop offset="100%" stop-color="' + seg.color + '"/>' +
+            '</linearGradient>';
+
+    var dark = shadeColor(seg.color, -35);
+    var darker = shadeColor(seg.color, -50);
+
+    var oWall = wallPath(seg.a1, seg.a2, R_OUTER);
+    if (oWall) wallsOuter += '<path class="seg-wall" data-index="' + i + '" d="' + oWall + '" fill="' + dark + '"/>';
+
+    var iWall = wallPath(seg.a1, seg.a2, R_INNER);
+    if (iWall) wallsInner += '<path d="' + iWall + '" fill="' + darker + '"/>';
+
+    var top = ringPath(seg.a1, seg.a2, R_OUTER, R_INNER);
+    tops += '<path class="seg-top" data-index="' + i + '" d="' + top + '" fill="url(#' + gid + ')" stroke="rgba(255,255,255,0.65)" stroke-width="1.5"/>';
+  });
+
+  var svg =
+    '<defs>' + defs +
+      '<filter id="floorShadow" x="-50%" y="-50%" width="200%" height="200%">' +
+        '<feGaussianBlur in="SourceGraphic" stdDeviation="6"/>' +
+      '</filter>' +
+    '</defs>' +
+    '<ellipse cx="' + CX + '" cy="' + (CY + DEPTH + 14) + '" rx="' + (R_OUTER * 0.92) + '" ry="' + (R_OUTER * SQUASH * 0.28) + '" fill="rgba(20,20,40,0.18)" filter="url(#floorShadow)"/>' +
+    '<g>' + wallsOuter + '</g>' +
+    '<g>' + wallsInner + '</g>' +
+    '<g>' + tops + '</g>' +
+    '<ellipse cx="' + CX + '" cy="' + CY + '" rx="' + R_INNER + '" ry="' + (R_INNER * SQUASH) + '" fill="#ffffff"/>';
+
+  var svgEl = document.getElementById("donutSvg");
+  svgEl.innerHTML = svg;
+  window.__segs = segs;
+  window.__total = total;
+
+  Array.prototype.forEach.call(svgEl.querySelectorAll(".seg-top"), function (el) {
+    el.addEventListener("click", function () {
+      sendSelectionToVA(parseInt(this.getAttribute("data-index"), 10));
+    });
+  });
+
+  Array.prototype.forEach.call(svgEl.querySelectorAll(".seg-top, .seg-wall"), function (el) {
+    el.addEventListener("mouseenter", function () { showTooltip(parseInt(this.getAttribute("data-index"), 10)); });
+    el.addEventListener("mousemove", moveTooltip);
+    el.addEventListener("mouseleave", hideTooltip);
+  });
+
+  renderCenterText(labels, values, total);
+  renderLegend(labels, values);
+}
+
+/* ===========================================================
+   TOOLTIP
+=========================================================== */
+function showTooltip(index) {
+  var segs = window.__segs;
+  if (!segs || !segs[index]) return;
+  var seg = segs[index];
+  var total = window.__total || 0;
+  var pct = total ? Math.round((seg.value / total) * 100) : 0;
+
+  var tip = document.getElementById("tooltip");
+  tip.innerHTML =
+    '<div class="tt-title"><span class="tt-swatch" style="background:' + seg.color + '"></span>' + seg.label + '</div>' +
+    '<div>' + seg.value.toLocaleString() + ' (' + pct + '%)</div>';
+  tip.style.display = "block";
+}
+
+function moveTooltip(evt) {
+  var tip = document.getElementById("tooltip");
+  var offset = 14;
+  var x = evt.clientX + offset;
+  var y = evt.clientY + offset;
+
+  // keep it on-screen near the right/bottom edges
+  var maxX = window.innerWidth - tip.offsetWidth - 8;
+  var maxY = window.innerHeight - tip.offsetHeight - 8;
+  if (x > maxX) x = evt.clientX - tip.offsetWidth - offset;
+  if (y > maxY) y = evt.clientY - tip.offsetHeight - offset;
+
+  tip.style.left = x + "px";
+  tip.style.top = y + "px";
+}
+
+function hideTooltip() {
+  document.getElementById("tooltip").style.display = "none";
+}
+
+function renderCenterText(labels, values, total) {
+  var idx = CENTER_METRIC_CATEGORY ? labels.indexOf(CENTER_METRIC_CATEGORY) : -1;
+  if (idx === -1) {
+    // Auto: pick the category with the highest value
+    var maxVal = -1;
+    values.forEach(function (v, i) {
+      if (v > maxVal) { maxVal = v; idx = i; }
+    });
+  }
+  var pct = (idx > -1 && total > 0) ? Math.round((values[idx] / total) * 100) : 0;
+  document.getElementById("pctText").textContent = pct + "%";
+  document.getElementById("pctSubText").textContent = CENTER_METRIC_LABEL + (labels[idx] ? " (" + labels[idx] + ")" : "");
+}
+
+function renderLegend(labels, values) {
+  var el = document.getElementById("legend");
+  el.innerHTML = "";
+  var total = values.reduce(function (a, b) { return a + b; }, 0);
+  labels.forEach(function (label, i) {
+    var color = CATEGORY_COLOR_OVERRIDES[label] || COLOR_PALETTE[i % COLOR_PALETTE.length];
+    var pct = total ? Math.round((values[i] / total) * 100) : 0;
+    var item = document.createElement("div");
+    item.className = "legend-item";
+    item.innerHTML =
+      '<span class="swatch" style="background:' + color + '"></span>' +
+      "<span>" + label + "</span><b>" + values[i].toLocaleString() + "</b>" +
+      '<span class="pct-tag">(' + pct + "%)</span>";
+    el.appendChild(item);
+  });
+}
+
+/* ===========================================================
+   SAS VA Data-Driven Content messaging
+=========================================================== */
+function handleVAMessage(event) {
+  var msg = event.data;
+  if (!msg || typeof msg !== "object" || !msg.data || !msg.columns) return;
+  try {
+    var labels = [], values = [];
+    var catColIdx = -1, measColIdx = -1;
+    msg.columns.forEach(function (col, i) {
+      if (col.type === "string" && catColIdx === -1) catColIdx = i;
+      if (col.type === "number" && measColIdx === -1) measColIdx = i;
+    });
+    msg.data.forEach(function (row) {
+      labels.push(String(row[catColIdx]));
+      values.push(Number(row[measColIdx]) || 0);
+    });
+    if (labels.length) renderDonut3D(labels, values);
+  } catch (e) {
+    console.error("Error parsing VA message:", e);
+  }
+}
+
+function sendSelectionToVA(rowIndex) {
+  if (window.parent === window) return;
+  window.parent.postMessage({
+    version: "1.0",
+    resultName: window.__resultName || "donutDDC3D",
+    selections: [{ row: rowIndex }]
+  }, "*");
+}
+
+window.addEventListener("message", handleVAMessage);
+
+/* Initial render with sample data (works standalone in a browser too) */
+renderDonut3D(sampleData.labels, sampleData.values);
+</script>
+
+</body>
+</html>
