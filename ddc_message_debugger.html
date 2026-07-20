@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>DDC Message Debugger</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 12px;
+    font-family: "Segoe UI", Arial, sans-serif;
+    font-size: 12px;
+    background: #fff;
+    color: #222;
+    box-sizing: border-box;
+    overflow: auto;
+  }
+  h3 {
+    margin: 0 0 8px 0;
+    font-size: 13px;
+  }
+  #status {
+    padding: 6px 10px;
+    border-radius: 6px;
+    margin-bottom: 10px;
+    font-weight: 600;
+    display: inline-block;
+  }
+  .waiting { background: #fff3cd; color: #7a5c00; }
+  .received { background: #d4edda; color: #155724; }
+  pre {
+    background: #f5f5f7;
+    padding: 10px;
+    border-radius: 8px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: 11px;
+    max-height: 400px;
+    overflow: auto;
+  }
+  #count {
+    color: #888;
+    margin-bottom: 6px;
+  }
+</style>
+</head>
+<body>
+  <h3>DDC Message Debugger</h3>
+  <div id="status" class="waiting">Waiting for a message from VA...</div>
+  <div id="count"></div>
+  <pre id="output">(nothing received yet)</pre>
+
+<script>
+  var msgCount = 0;
+
+  // Log every single postMessage this frame receives, no filtering at all,
+  // so we can see EXACTLY what VA is sending in your environment/version.
+  window.addEventListener("message", function (event) {
+    msgCount++;
+    document.getElementById("status").textContent = "Message received!";
+    document.getElementById("status").className = "received";
+    document.getElementById("count").textContent = "Messages received so far: " + msgCount;
+
+    var pretty;
+    try {
+      pretty = JSON.stringify(event.data, null, 2);
+    } catch (e) {
+      pretty = String(event.data) + "\\n\\n(could not JSON.stringify - see console)";
+    }
+    document.getElementById("output").textContent =
+      "origin: " + event.origin + "\\n\\n" + pretty;
+
+    // Also log to console for full inspection (expand objects, etc.)
+    console.log("VA message #" + msgCount, event);
+  });
+
+  // Some VA versions expect an initial handshake reply - harmless to send if not needed.
+  window.onload = function () {
+    try {
+      window.parent.postMessage({ version: "1" }, "*");
+    } catch (e) {}
+  };
+</script>
+</body>
+</html>
