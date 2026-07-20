@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Animated Key Value - SAS VA Data-Driven Content</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    font-family: "Segoe UI", Arial, sans-serif;
+    background: transparent;
+  }
+  #container {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  #keyvalue {
+    font-size: 8vw;
+    font-weight: 700;
+    color: #2f6db5;
+    text-align: center;
+    line-height: 1;
+  }
+  #label {
+    font-size: 1.5vw;
+    color: #666;
+    text-align: center;
+    margin-top: 4px;
+  }
+</style>
+</head>
+<body>
+<div id="container">
+  <div>
+    <div id="keyvalue">0</div>
+    <div id="label"></div>
+  </div>
+</div>
+
+<script>
+  // ---- CONFIG ----
+  var ANIMATION_DURATION_MS = 1500;   // how long the count-up animation takes
+  var DECIMAL_PLACES = 0;             // set to 1, 2, etc. if you want decimals
+  var USE_THOUSANDS_SEPARATOR = true;
+
+  var currentValue = 0;
+  var animationFrame = null;
+
+  function formatNumber(num) {
+    var fixed = num.toFixed(DECIMAL_PLACES);
+    if (!USE_THOUSANDS_SEPARATOR) return fixed;
+    var parts = fixed.split(".");
+    parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+    return parts.join(".");
+  }
+
+  function easeOutQuad(t) {
+    return t * (2 - t);
+  }
+
+  function animateTo(target) {
+    if (animationFrame) cancelAnimationFrame(animationFrame);
+    var start = currentValue;
+    var change = target - start;
+    var startTime = null;
+
+    function step(timestamp) {
+      if (!startTime) startTime = timestamp;
+      var progress = Math.min((timestamp - startTime) / ANIMATION_DURATION_MS, 1);
+      var eased = easeOutQuad(progress);
+      var value = start + change * eased;
+      document.getElementById("keyvalue").innerText = formatNumber(value);
+
+      if (progress < 1) {
+        animationFrame = requestAnimationFrame(step);
+      } else {
+        currentValue = target;
+        document.getElementById("keyvalue").innerText = formatNumber(target);
+      }
+    }
+    animationFrame = requestAnimationFrame(step);
+  }
+
+  // ---- SAS VA MESSAGE CONTRACT ----
+  // SAS VA Data-Driven Content objects communicate via postMessage.
+  // On load, VA sends a handshake ("getVersion"); the object must reply.
+  // When data changes, VA sends a message of type "dataReceived" containing
+  // .columns (metadata) and .data (array of row arrays).
+
+  window.onload = function () {
+    window.parent.postMessage({ version: "1" }, "*");
+  };
+
+  window.addEventListener("message", function (event) {
+    var msg = event.data;
+    if (!msg || !msg.type) return;
+
+    if (msg.type === "getVersion") {
+      // Handshake response
+      window.parent.postMessage({ version: "1" }, "*");
+      return;
+    }
+
+    if (msg.type === "dataReceived") {
+      var columns = msg.columns || [];
+      var rows = msg.data || [];
+
+      if (rows.length === 0 || columns.length === 0) {
+        document.getElementById("keyvalue").innerText = "No data";
+        document.getElementById("label").innerText = "";
+        return;
+      }
+
+      // Use the first measure column found (falls back to first column)
+      var valueColIndex = 0;
+      for (var i = 0; i < columns.length; i++) {
+        if (columns[i].type === "number") {
+          valueColIndex = i;
+          break;
+        }
+      }
+
+      var rawValue = Number(rows[0][valueColIndex]);
+      var colLabel = columns[valueColIndex].label || columns[valueColIndex].name || "";
+
+      document.getElementById("label").innerText = colLabel;
+
+      if (!isNaN(rawValue)) {
+        animateTo(rawValue);
+      } else {
+        document.getElementById("keyvalue").innerText = "N/A";
+      }
+    }
+  });
+</script>
+</body>
+</html>
