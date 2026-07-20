@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Rounded Dropdown Filter - SAS VA Data-Driven Content</title>
+<style>
+  :root {
+    --border-color: #e2e2e6;
+    --text-color: #4a4a4f;
+    --hover-bg: #f5f5f7;
+    --active-bg: #eef4ff;
+    --active-color: #3f7ce0;
+    --font: "Segoe UI", Arial, sans-serif;
+  }
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    font-family: var(--font);
+    background: transparent;
+    overflow: hidden; /* the object's own iframe defines our whole world - contain everything in it */
+  }
+
+  /* Everything lives in one flex column that never exceeds the object's actual size.
+     This is what fixes the "list doesn't appear" issue: instead of floating a panel
+     outside the box (which gets clipped by the DDC iframe), the list pushes down
+     inside the same box and scrolls internally if it runs out of room. */
+  .dropdown {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    height: 100%;
+    box-sizing: border-box;
+  }
+
+  .dropdown-trigger {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    width: 100%;
+    box-sizing: border-box;
+    padding: 7px 12px;
+    border: 1px solid var(--border-color);
+    border-radius: 999px;
+    background: #ffffff;
+    font-size: 12px;
+    color: var(--text-color);
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex: 0 0 auto;
+  }
+  .dropdown-trigger:hover { background: var(--hover-bg); }
+  .dropdown-trigger.open { border-color: var(--active-color); }
+
+  .chevron {
+    flex: 0 0 auto;
+    width: 9px;
+    height: 9px;
+    border-right: 1.5px solid var(--text-color);
+    border-bottom: 1.5px solid var(--text-color);
+    transform: rotate(45deg);
+    transition: transform 0.15s ease;
+    margin-top: -3px;
+  }
+  .dropdown-trigger.open .chevron {
+    transform: rotate(-135deg);
+    margin-top: 3px;
+  }
+
+  .dropdown-panel {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    background: #ffffff;
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    box-shadow: 0 6px 20px rgba(20, 20, 30, 0.12);
+    padding: 6px;
+    box-sizing: border-box;
+    margin-top: 6px;
+    display: none;
+  }
+  .dropdown-panel.open { display: block; }
+
+  .dropdown-option {
+    padding: 7px 10px;
+    border-radius: 8px;
+    font-size: 12px;
+    color: var(--text-color);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .dropdown-option:hover { background: var(--hover-bg); }
+  .dropdown-option.selected {
+    background: var(--active-bg);
+    color: var(--active-color);
+    font-weight: 600;
+  }
+</style>
+</head>
+<body>
+
+<div class="dropdown" id="dropdown">
+  <div class="dropdown-trigger" id="trigger">
+    <span id="triggerLabel">Categories</span>
+    <span class="chevron"></span>
+  </div>
+  <div class="dropdown-panel" id="panel">
+    <!-- options injected dynamically -->
+  </div>
+</div>
+
+<script>
+  var resultName = null;
+  var fieldLabel = "Categories";
+  var options = [];         // [{ value, row }]
+  var selectedValue = null;
+
+  var trigger = document.getElementById("trigger");
+  var triggerLabel = document.getElementById("triggerLabel");
+  var panel = document.getElementById("panel");
+
+  function renderPanel() {
+    panel.innerHTML = "";
+    options.forEach(function (opt) {
+      var el = document.createElement("div");
+      el.className = "dropdown-option" + (selectedValue === opt.value ? " selected" : "");
+      el.textContent = opt.value;
+      el.onclick = function () { selectOption(opt.value, opt.row); };
+      panel.appendChild(el);
+    });
+  }
+
+  function selectOption(value, row) {
+    selectedValue = value;
+    triggerLabel.textContent = value;
+    closePanel();
+    renderPanel();
+
+    if (resultName) {
+      var message = {
+        version: "1",
+        resultName: resultName,
+        selections: [{ row: row }]
+      };
+      window.parent.postMessage(message, "*");
+    }
+  }
+
+  function openPanel() {
+    trigger.classList.add("open");
+    panel.classList.add("open");
+  }
+  function closePanel() {
+    trigger.classList.remove("open");
+    panel.classList.remove("open");
+  }
+
+  trigger.addEventListener("click", function () {
+    if (panel.classList.contains("open")) closePanel(); else openPanel();
+  });
+
+  // ---- SAS VA sends data messages as event.data directly (no "type" field) ----
+  window.addEventListener("message", function (event) {
+    var msg = event.data;
+    if (!msg || !msg.columns || !msg.data) return;
+
+    resultName = msg.resultName;
+
+    var columns = msg.columns;
+    var rows = msg.data;
+    if (columns.length === 0) return;
+
+    var textColIndex = -1;
+    for (var i = 0; i < columns.length; i++) {
+      if (columns[i].usage === "brush") continue;
+      if (columns[i].type === "string") { textColIndex = i; break; }
+    }
+    if (textColIndex === -1) return;
+
+    fieldLabel = columns[textColIndex].label || columns[textColIndex].name;
+
+    var seen = {};
+    options = [];
+    for (var r = 0; r < rows.length; r++) {
+      var val = rows[r][textColIndex];
+      if (val === null || val === undefined || seen[val]) continue;
+      seen[val] = true;
+      options.push({ value: val, row: r });
+    }
+    options.sort(function (a, b) { return String(a.value).localeCompare(String(b.value)); });
+
+    if (selectedValue === null) {
+      triggerLabel.textContent = fieldLabel;
+    }
+    renderPanel();
+  });
+</script>
+
+</body>
+</html>
