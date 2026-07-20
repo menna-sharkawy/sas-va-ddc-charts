@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Animated Gauge - SLA Compliance</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    font-family: "Segoe UI", Arial, sans-serif;
+    background: transparent;
+  }
+  #container {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .gauge-wrap {
+    position: relative;
+    width: 260px;
+    text-align: center;
+  }
+  #pct {
+    font-size: 34px;
+    font-weight: 700;
+    fill: #222;
+  }
+  #sublabel {
+    font-size: 11px;
+    fill: #888;
+    letter-spacing: 0.5px;
+  }
+  .footer {
+    display: flex;
+    justify-content: space-between;
+    font-size: 11px;
+    color: #888;
+    margin-top: 8px;
+    padding: 0 20px;
+  }
+  .footer .val {
+    font-weight: 700;
+    font-size: 13px;
+    display: block;
+  }
+  .target .val { color: #333; }
+  .breach .val { color: #e0455f; }
+</style>
+</head>
+<body>
+<div id="container">
+  <div class="gauge-wrap">
+    <svg id="gauge" width="260" height="150" viewBox="0 0 260 150">
+      <!-- background track -->
+      <path id="track" fill="none" stroke="#e8e8ec" stroke-width="18" stroke-linecap="round"/>
+      <!-- animated value arc -->
+      <path id="valueArc" fill="none" stroke-width="18" stroke-linecap="round"/>
+      <!-- needle dot at end of arc -->
+      <circle id="needle" r="7" fill="#ffffff" stroke-width="4"/>
+      <text id="pct" x="130" y="95" text-anchor="middle">0%</text>
+      <text id="sublabel" x="130" y="112" text-anchor="middle">VS 92% TARGET</text>
+    </svg>
+    <div class="footer">
+      <div class="target">
+        TARGET
+        <span class="val" id="targetVal">92%</span>
+      </div>
+      <div class="breach">
+        BREACHED
+        <span class="val" id="breachVal">1,780</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  // ---- CONFIG ----
+  var ANIMATION_DURATION_MS = 1500;
+  var TARGET_PCT = 92;          // target line/label shown under gauge
+  var BREACH_COUNT = "1,780";   // whatever count you want to display
+
+  // Color thresholds - edit these to match your business rules
+  var COLOR_STOPS = [
+    { upTo: 50,  color: "#e0455f" },  // red   : poor
+    { upTo: 80,  color: "#f2a93b" },  // amber : warning
+    { upTo: 101, color: "#3fb97f" }   // green : good
+  ];
+
+  var CX = 130, CY = 95, R = 90;       // gauge geometry (semicircle, 180 -> 0 deg)
+  var currentValue = 0;
+  var animationFrame = null;
+
+  function polarToCartesian(cx, cy, r, angleDeg) {
+    var rad = (angleDeg * Math.PI) / 180;
+    return { x: cx + r * Math.cos(rad), y: cy - r * Math.sin(rad) };
+  }
+
+  // describe an arc from 180deg (left) sweeping down to `angleDeg`
+  function describeArc(cx, cy, r, startAngle, endAngle) {
+    var start = polarToCartesian(cx, cy, r, startAngle);
+    var end = polarToCartesian(cx, cy, r, endAngle);
+    var largeArc = startAngle - endAngle <= 180 ? "0" : "1";
+    return [
+      "M", start.x, start.y,
+      "A", r, r, 0, largeArc, 1, end.x, end.y
+    ].join(" ");
+  }
+
+  function colorForValue(v) {
+    for (var i = 0; i < COLOR_STOPS.length; i++) {
+      if (v <= COLOR_STOPS[i].upTo) return COLOR_STOPS[i].color;
+    }
+    return COLOR_STOPS[COLOR_STOPS.length - 1].color;
+  }
+
+  function easeOutQuad(t) { return t * (2 - t); }
+
+  function draw(value) {
+    // 0% -> 180deg (left), 100% -> 0deg (right)
+    var angle = 180 - (value / 100) * 180;
+    var arcPath = describeArc(CX, CY, R, 180, angle);
+    var color = colorForValue(value);
+
+    document.getElementById("valueArc").setAttribute("d", arcPath);
+    document.getElementById("valueArc").setAttribute("stroke", color);
+    document.getElementById("pct").textContent = Math.round(value) + "%";
+    document.getElementById("pct").setAttribute("fill", color);
+
+    var tip = polarToCartesian(CX, CY, R, angle);
+    document.getElementById("needle").setAttribute("cx", tip.x);
+    document.getElementById("needle").setAttribute("cy", tip.y);
+    document.getElementById("needle").setAttribute("stroke", color);
+  }
+
+  function animateTo(target) {
+    if (animationFrame) cancelAnimationFrame(animationFrame);
+    var start = currentValue;
+    var change = target - start;
+    var startTime = null;
+
+    function step(timestamp) {
+      if (!startTime) startTime = timestamp;
+      var progress = Math.min((timestamp - startTime) / ANIMATION_DURATION_MS, 1);
+      var eased = easeOutQuad(progress);
+      var value = start + change * eased;
+      draw(value);
+
+      if (progress < 1) {
+        animationFrame = requestAnimationFrame(step);
+      } else {
+        currentValue = target;
+        draw(target);
+      }
+    }
+    animationFrame = requestAnimationFrame(step);
+  }
+
+  // static background track (full semicircle)
+  document.getElementById("track").setAttribute("d", describeArc(CX, CY, R, 180, 0));
+  document.getElementById("targetVal").textContent = TARGET_PCT + "%";
+  document.getElementById("breachVal").textContent = BREACH_COUNT;
+
+  // ---- SAS VA sends data messages as event.data directly (no "type" field) ----
+  window.onload = function () {
+    window.parent.postMessage({ version: "1" }, "*");
+  };
+
+  window.addEventListener("message", function (event) {
+    var msg = event.data;
+    if (!msg || !msg.columns || !msg.data) return;
+
+    var columns = msg.columns;
+    var rows = msg.data;
+    if (rows.length === 0 || columns.length === 0) return;
+
+    var valueColIndex = -1;
+    for (var i = 0; i < columns.length; i++) {
+      if (columns[i].usage === "brush") continue;
+      if (columns[i].type === "number") { valueColIndex = i; break; }
+    }
+    if (valueColIndex === -1) return;
+
+    var rawValue = Number(rows[0][valueColIndex]);
+    if (isNaN(rawValue)) return;
+
+    // SAS sends percent-formatted measures as a raw fraction (1 = 100%, 0.43 = 43%).
+    // Detect that and scale up to a 0-100 value before animating.
+    var col = columns[valueColIndex];
+    var isPercentFormat = col.format && /PERCENT/i.test(col.format.name || "");
+    var value = isPercentFormat ? rawValue * 100 : rawValue;
+
+    animateTo(Math.max(0, Math.min(100, value)));
+  });
+</script>
+</body>
+</html>
