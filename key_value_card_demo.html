@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Key Value Card - SAS VA Data-Driven Content</title>
+<style>
+  :root {
+    --card-bg: #ffffff;
+    --card-radius: 14px;
+    --card-shadow: 0 2px 10px rgba(20, 20, 30, 0.06);
+    --accent-color: #2f6db5;
+    --title-color: #1c1c1e;
+    --subtitle-color: #9a9a9f;
+    --badge-bg: #eef4ff;
+    --badge-color: #3f7ce0;
+    --font: "Segoe UI", Arial, sans-serif;
+  }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    font-family: var(--font);
+    background: transparent;
+  }
+
+  .card {
+    box-sizing: border-box;
+    width: 100%;
+    height: 100%;
+    background: var(--card-bg);
+    border-radius: var(--card-radius);
+    box-shadow: var(--card-shadow);
+    padding: 16px 18px;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .card-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    margin-bottom: 10px;
+  }
+
+  .card-title-block {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .accent-bar {
+    width: 3px;
+    align-self: stretch;
+    min-height: 16px;
+    background: var(--accent-color);
+    border-radius: 2px;
+    margin-top: 2px;
+  }
+
+  .title-text { display: flex; flex-direction: column; }
+
+  .title-text .title {
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.4px;
+    color: var(--title-color);
+    text-transform: uppercase;
+  }
+
+  .title-text .subtitle {
+    font-size: 10px;
+    color: var(--subtitle-color);
+    letter-spacing: 0.3px;
+    margin-top: 2px;
+  }
+
+  .badge {
+    display: none;
+    align-items: center;
+    gap: 5px;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 3px 9px;
+    border-radius: 20px;
+    background: var(--badge-bg);
+    color: var(--badge-color);
+    white-space: nowrap;
+  }
+
+  .badge .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+
+  .card-body {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 0;
+  }
+
+  #keyvalue {
+    font-size: 8vw;
+    font-weight: 700;
+    color: var(--accent-color);
+    text-align: center;
+    line-height: 1;
+  }
+</style>
+</head>
+<body>
+
+<div class="card">
+  <div class="card-header">
+    <div class="card-title-block">
+      <div class="accent-bar"></div>
+      <div class="title-text">
+        <span class="title" id="cardTitle">Key Value</span>
+        <span class="subtitle" id="cardSubtitle"></span>
+      </div>
+    </div>
+    <div class="badge" id="cardBadge">
+      <span class="dot"></span>
+      <span id="cardBadgeText">LIVE</span>
+    </div>
+  </div>
+
+  <div class="card-body">
+    <div id="keyvalue">0</div>
+  </div>
+</div>
+
+<script>
+  // ---- CONFIG ----
+  var ANIMATION_DURATION_MS = 1500;
+  var DECIMAL_PLACES = 0;
+  var USE_THOUSANDS_SEPARATOR = true;
+
+  var currentValue = 0;
+  var animationFrame = null;
+
+  function configureCard(opts) {
+    opts = opts || {};
+    if (opts.title !== undefined) {
+      document.getElementById("cardTitle").textContent = opts.title;
+    }
+    if (opts.subtitle !== undefined) {
+      document.getElementById("cardSubtitle").textContent = opts.subtitle;
+    }
+    if (opts.accentColor) {
+      document.documentElement.style.setProperty("--accent-color", opts.accentColor);
+    }
+    if (opts.badgeText) {
+      document.getElementById("cardBadge").style.display = "flex";
+      document.getElementById("cardBadgeText").textContent = opts.badgeText;
+    } else {
+      document.getElementById("cardBadge").style.display = "none";
+    }
+  }
+
+  function formatNumber(num) {
+    var fixed = num.toFixed(DECIMAL_PLACES);
+    if (!USE_THOUSANDS_SEPARATOR) return fixed;
+    var parts = fixed.split(".");
+    parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+    return parts.join(".");
+  }
+
+  function easeOutQuad(t) { return t * (2 - t); }
+
+  function animateTo(target) {
+    if (animationFrame) cancelAnimationFrame(animationFrame);
+    var start = currentValue;
+    var change = target - start;
+    var startTime = null;
+
+    function step(timestamp) {
+      if (!startTime) startTime = timestamp;
+      var progress = Math.min((timestamp - startTime) / ANIMATION_DURATION_MS, 1);
+      var eased = easeOutQuad(progress);
+      var value = start + change * eased;
+      document.getElementById("keyvalue").innerText = formatNumber(value);
+
+      if (progress < 1) {
+        animationFrame = requestAnimationFrame(step);
+      } else {
+        currentValue = target;
+        document.getElementById("keyvalue").innerText = formatNumber(target);
+      }
+    }
+    animationFrame = requestAnimationFrame(step);
+  }
+
+  // ---- SAS VA MESSAGE CONTRACT ----
+  window.onload = function () {
+    window.parent.postMessage({ version: "1" }, "*");
+
+    // ---- DEMO ONLY: simulates SAS VA sending Category="Total Alerts", Value=5097 ----
+    // Remove this block when deploying inside SAS VA.
+    var demoMessage = {
+      type: "dataReceived",
+      columns: [
+        { name: "Category", label: "Category", type: "string" },
+        { name: "Value", label: "Total Alerts", type: "number" }
+      ],
+      data: [["Total Alerts", 5097]]
+    };
+    window.postMessage(demoMessage, "*");
+  };
+
+  window.addEventListener("message", function (event) {
+    var msg = event.data;
+    if (!msg || !msg.type) return;
+
+    if (msg.type === "getVersion") {
+      window.parent.postMessage({ version: "1" }, "*");
+      return;
+    }
+
+    if (msg.type === "dataReceived") {
+      var columns = msg.columns || [];
+      var rows = msg.data || [];
+      if (rows.length === 0 || columns.length === 0) return;
+
+      // Locate first text column (drives the title) and first numeric column (drives the value)
+      var textColIndex = -1, numColIndex = -1;
+      for (var i = 0; i < columns.length; i++) {
+        if (textColIndex === -1 && columns[i].type === "string") textColIndex = i;
+        if (numColIndex === -1 && columns[i].type === "number") numColIndex = i;
+      }
+
+      // --- Dynamic title: prefer a text data item's value, fall back to the measure's label ---
+      var dynamicTitle;
+      if (textColIndex !== -1) {
+        dynamicTitle = rows[0][textColIndex];                                   // Option A
+      } else if (numColIndex !== -1) {
+        dynamicTitle = columns[numColIndex].label || columns[numColIndex].name; // Option B
+      } else {
+        dynamicTitle = "Key Value";
+      }
+
+      configureCard({ title: dynamicTitle });
+
+      if (numColIndex !== -1) {
+        var rawValue = Number(rows[0][numColIndex]);
+        if (!isNaN(rawValue)) animateTo(rawValue);
+      }
+    }
+  });
+</script>
+
+</body>
+</html>
