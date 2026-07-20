@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Alerts by Operator - DDC Bar Chart</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    font-family: "Segoe UI", Arial, sans-serif;
+    background: transparent;
+    overflow: hidden;
+  }
+  #wrapper {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    box-sizing: border-box;
+    padding: 6px;
+  }
+  #chartArea {
+    position: relative;
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+  #legend {
+    display: flex;
+    gap: 18px;
+    flex-wrap: wrap;
+    justify-content: center;
+    padding-top: 6px;
+    font-size: 11px;
+    color: #333;
+  }
+  .legend-item { display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; }
+  .legend-item.disabled { opacity: 0.35; }
+  .swatch { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+</style>
+</head>
+<body>
+
+<div id="wrapper">
+  <div id="chartArea">
+    <canvas id="barChart"></canvas>
+  </div>
+  <div id="legend"></div>
+</div>
+
+<script>
+/* ===========================================================
+   CONFIG
+=========================================================== */
+// "stacked" -> segments stack into one bar per category (like the screenshot)
+// "grouped" -> separate side-by-side bars per measure, per category
+var BAR_MODE = "stacked";
+
+// Colors assigned by measure POSITION (1st measure, 2nd measure, ...).
+// Works automatically no matter what the measure names are.
+var COLOR_PALETTE = [
+  "#3b82f6", // blue   - e.g. Resolved
+  "#ef4444", // red    - e.g. SLA Breaches
+  "#22c55e", // green
+  "#f2a93b", // orange
+  "#a855f7", // purple
+  "#14b8a6"  // teal
+];
+
+// Optional: force a specific measure name to a specific color
+// regardless of position (leave empty {} to skip).
+var MEASURE_COLOR_OVERRIDES = {
+  // "Resolved": "#3b82f6",
+  // "SLA Breaches": "#ef4444"
+};
+
+var BAR_THICKNESS = 26;   // px, per bar/segment
+var BAR_RADIUS = 8;       // rounded corner radius
+var CATEGORY_GAP = 0.35;  // spacing between category groups (0-1)
+
+// Sample/fallback data so this renders standalone in a browser too.
+var sampleData = {
+  categories: ["JD", "WS", "AS", "HQ", "TH", "IN"],
+  series: [
+    { name: "Resolved", values: [195, 199, 178, 189, 186, 154] },
+    { name: "SLA Breaches", values: [95, 94, 64, 90, 89, 71] }
+  ]
+};
+
+/* ===========================================================
+   CHART BUILD
+=========================================================== */
+var chart;
+
+function colorFor(name, i) {
+  return MEASURE_COLOR_OVERRIDES[name] || COLOR_PALETTE[i % COLOR_PALETTE.length];
+}
+
+function buildChart(categories, series) {
+  var ctx = document.getElementById("barChart").getContext("2d");
+  if (chart) chart.destroy();
+
+  var datasets = series.map(function (s, i) {
+    var color = colorFor(s.name, i);
+    return {
+      label: s.name,
+      data: s.values,
+      backgroundColor: color,
+      borderRadius: BAR_RADIUS,
+      borderSkipped: false,
+      maxBarThickness: BAR_THICKNESS,
+      stack: BAR_MODE === "stacked" ? "stack1" : ("stack" + i)
+    };
+  });
+
+  chart = new Chart(ctx, {
+    type: "bar",
+    data: { labels: categories, datasets: datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      categoryPercentage: 1 - CATEGORY_GAP,
+      barPercentage: 0.9,
+      plugins: {
+        legend: { display: false }, // custom HTML legend below instead
+        tooltip: {
+          mode: "index",
+          intersect: false,
+          callbacks: {
+            label: function (item) {
+              return item.dataset.label + ": " + item.raw.toLocaleString();
+            },
+            footer: function (items) {
+              if (BAR_MODE !== "stacked" || items.length < 2) return "";
+              var total = items.reduce(function (sum, it) { return sum + it.raw; }, 0);
+              return "Total: " + total.toLocaleString();
+            }
+          }
+        }
+      },
+      scales: {
+        x: { stacked: BAR_MODE === "stacked", grid: { display: false } },
+        y: { stacked: BAR_MODE === "stacked", beginAtZero: true, grid: { color: "rgba(0,0,0,0.06)" } }
+      },
+      onClick: function (evt, elements) {
+        if (!elements.length) return;
+        var idx = elements[0].index;
+        sendSelectionToVA(idx);
+      }
+    }
+  });
+
+  renderLegend(series);
+}
+
+function renderLegend(series) {
+  var el = document.getElementById("legend");
+  el.innerHTML = "";
+  series.forEach(function (s, i) {
+    var color = colorFor(s.name, i);
+    var item = document.createElement("div");
+    item.className = "legend-item";
+    item.innerHTML =
+      '<span class="swatch" style="background:' + color + '"></span><span>' + s.name + "</span>";
+    item.addEventListener("click", function () {
+      var meta = chart.getDatasetMeta(i);
+      meta.hidden = meta.hidden === null ? !chart.data.datasets[i].hidden : null;
+      item.classList.toggle("disabled");
+      chart.update();
+    });
+    el.appendChild(item);
+  });
+}
+
+/* ===========================================================
+   SAS Visual Analytics Data-Driven Content messaging
+=========================================================== */
+function handleVAMessage(event) {
+  var msg = event.data;
+  if (!msg || typeof msg !== "object" || !msg.data || !msg.columns) return;
+
+  try {
+    var categories = [];
+    var catColIdx = -1;
+    var measureCols = []; // {idx, name}
+
+    msg.columns.forEach(function (col, i) {
+      if (col.type === "string" && catColIdx === -1) {
+        catColIdx = i;
+      } else if (col.type === "number") {
+        measureCols.push({ idx: i, name: col.label || col.name || ("Measure " + (measureCols.length + 1)) });
+      }
+    });
+
+    if (catColIdx === -1 || measureCols.length === 0) return;
+
+    msg.data.forEach(function (row) {
+      categories.push(String(row[catColIdx]));
+    });
+
+    var series = measureCols.map(function (m) {
+      return {
+        name: m.name,
+        values: msg.data.map(function (row) { return Number(row[m.idx]) || 0; })
+      };
+    });
+
+    buildChart(categories, series);
+  } catch (e) {
+    console.error("Error parsing VA message:", e);
+  }
+}
+
+function sendSelectionToVA(rowIndex) {
+  if (window.parent === window) return;
+  window.parent.postMessage({
+    version: "1.0",
+    resultName: window.__resultName || "barDDC",
+    selections: [{ row: rowIndex }]
+  }, "*");
+}
+
+window.addEventListener("message", handleVAMessage);
+
+/* Initial render with sample data (works standalone in a browser too) */
+buildChart(sampleData.categories, sampleData.series);
+</script>
+
+</body>
+</html>
