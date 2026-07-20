@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Alerts by Operator 3D - DDC Bar Chart</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    font-family: "Segoe UI", Arial, sans-serif;
+    background: transparent;
+    overflow: hidden;
+  }
+  #wrapper {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    box-sizing: border-box;
+    padding: 4px;
+  }
+  #chartArea {
+    position: relative;
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+  #barSvg { width: 100%; height: 100%; display: block; }
+  #legend {
+    display: flex;
+    gap: 18px;
+    flex-wrap: wrap;
+    justify-content: center;
+    padding-top: 4px;
+    font-size: 11px;
+    color: #333;
+  }
+  .legend-item { display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; }
+  .legend-item.disabled { opacity: 0.35; }
+  .swatch { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+  .bar-seg { cursor: pointer; }
+  #tooltip {
+    position: fixed;
+    display: none;
+    pointer-events: none;
+    background: rgba(30, 30, 45, 0.92);
+    color: #fff;
+    padding: 6px 10px;
+    border-radius: 6px;
+    font-size: 11px;
+    line-height: 1.5;
+    white-space: nowrap;
+    z-index: 1000;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+  }
+  #tooltip .tt-title { font-weight: 700; margin-bottom: 1px; }
+  #tooltip .tt-swatch { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; }
+</style>
+</head>
+<body>
+
+<div id="wrapper">
+  <div id="chartArea">
+    <svg id="barSvg"></svg>
+  </div>
+  <div id="legend"></div>
+</div>
+<div id="tooltip"></div>
+
+<script>
+/* ===========================================================
+   CONFIG
+=========================================================== */
+// "stacked"  -> segments stack into one pill-shaped bar per category (matches the dashboard screenshot)
+// "grouped"  -> separate mini pill bars side-by-side per measure, per category
+var BAR_MODE = "stacked";
+
+// Colors assigned by measure POSITION — works automatically no matter the measure names.
+var COLOR_PALETTE = [
+  "#38bdf8", // blue   - e.g. Resolved
+  "#f43f5e", // red    - e.g. SLA Breaches
+  "#22c55e",
+  "#f2a93b",
+  "#a855f7",
+  "#14b8a6"
+];
+
+// Optional: force a specific measure name to a specific color regardless of position.
+var MEASURE_COLOR_OVERRIDES = {
+  // "Resolved": "#38bdf8",
+  // "SLA Breaches": "#f43f5e"
+};
+
+var SHOW_TOTAL_LABEL = true; // number above each bar/stack
+
+// Sample/fallback data so this renders standalone in a browser too.
+var sampleData = {
+  categories: ["JD", "WS", "AS", "HQ", "TH", "IN"],
+  series: [
+    { name: "Resolved", values: [195, 199, 178, 189, 186, 154] },
+    { name: "SLA Breaches", values: [95, 94, 64, 90, 89, 71] }
+  ]
+};
+
+var lastCategories = null, lastSeries = null;
+
+/* ===========================================================
+   HELPERS
+=========================================================== */
+function colorFor(name, i) {
+  return MEASURE_COLOR_OVERRIDES[name] || COLOR_PALETTE[i % COLOR_PALETTE.length];
+}
+
+function shadeColor(hex, percent) {
+  var f = parseInt(hex.slice(1), 16),
+      t = percent < 0 ? 0 : 255,
+      p = percent < 0 ? -percent : percent,
+      R = f >> 16, G = (f >> 8) & 0x00FF, B = f & 0x0000FF;
+  return "#" + (0x1000000 +
+    (Math.round((t - R) * p / 100) + R) * 0x10000 +
+    (Math.round((t - G) * p / 100) + G) * 0x100 +
+    (Math.round((t - B) * p / 100) + B)
+  ).toString(16).slice(1);
+}
+
+/* ===========================================================
+   MAIN RENDER
+=========================================================== */
+function renderBars(categories, series) {
+  lastCategories = categories;
+  lastSeries = series;
+
+  var wrap = document.getElementById("chartArea");
+  var W = wrap.clientWidth || 400;
+  var H = wrap.clientHeight || 260;
+
+  var svg = document.getElementById("barSvg");
+  svg.setAttribute("viewBox", "0 0 " + W + " " + H);
+  svg.setAttribute("width", W);
+  svg.setAttribute("height", H);
+
+  var topPad = 26, bottomPad = 22, sidePad = 10;
+  var plotH = H - topPad - bottomPad;
+  var plotW = W - sidePad * 2;
+  var baselineY = H - bottomPad;
+
+  var groupCount = categories.length;
+  var groupW = plotW / groupCount;
+
+  // Determine scale
+  var maxVal = 0;
+  if (BAR_MODE === "stacked") {
+    categories.forEach(function (c, ci) {
+      var total = series.reduce(function (s, ser) { return s + (ser.values[ci] || 0); }, 0);
+      if (total > maxVal) maxVal = total;
+    });
+  } else {
+    series.forEach(function (ser) {
+      ser.values.forEach(function (v) { if (v > maxVal) maxVal = v; });
+    });
+  }
+  if (maxVal <= 0) maxVal = 1;
+  var scale = plotH / maxVal;
+
+  var defs = "";
+  var shadows = "";
+  var bars = "";
+  var labels = "";
+
+  categories.forEach(function (cat, ci) {
+    if (BAR_MODE === "stacked") {
+      var barW = Math.min(46, groupW * 0.55);
+      var barX = sidePad + groupW * ci + (groupW - barW) / 2;
+      var total = series.reduce(function (s, ser) { return s + (ser.values[ci] || 0); }, 0);
+      var totalH = Math.max(total * scale, 2);
+      var topY = baselineY - totalH;
+      var clipId = "clip" + ci;
+      var pillRadius = barW / 2;
+
+      defs += '<clipPath id="' + clipId + '"><rect x="' + barX + '" y="' + topY + '" width="' + barW + '" height="' + totalH + '" rx="' + pillRadius + '" ry="' + pillRadius + '"/></clipPath>';
+
+      shadows += '<ellipse cx="' + (barX + barW / 2) + '" cy="' + (baselineY + 4) + '" rx="' + (barW * 0.55) + '" ry="4" fill="rgba(20,20,40,0.15)"/>';
+
+      var segGroup = '<g clip-path="url(#' + clipId + ')">';
+      var cursorY = baselineY;
+      series.forEach(function (ser, si) {
+        var val = ser.values[ci] || 0;
+        var segH = val * scale;
+        var segTop = cursorY - segH;
+        var color = colorFor(ser.name, si);
+        var light = shadeColor(color, 22);
+        var gid = "segGrad" + ci + "_" + si;
+        defs += '<linearGradient id="' + gid + '" x1="0%" y1="0%" x2="100%" y2="0%">' +
+                  '<stop offset="0%" stop-color="' + light + '"/>' +
+                  '<stop offset="55%" stop-color="' + color + '"/>' +
+                  '<stop offset="100%" stop-color="' + shadeColor(color, -12) + '"/>' +
+                '</linearGradient>';
+        segGroup += '<rect class="bar-seg" data-cat="' + ci + '" data-series="' + si + '" x="' + barX + '" y="' + segTop + '" width="' + barW + '" height="' + (segH + 1) + '" rx="' + (barW * 0.3) + '" ry="' + (barW * 0.3) + '" fill="url(#' + gid + ')"/>';
+        cursorY = segTop;
+      });
+      // glossy vertical highlight strip
+      segGroup += '<rect x="' + (barX + barW * 0.12) + '" y="' + topY + '" width="' + (barW * 0.22) + '" height="' + totalH + '" fill="rgba(255,255,255,0.35)"/>';
+      segGroup += "</g>";
+      bars += segGroup;
+
+      if (SHOW_TOTAL_LABEL) {
+        labels += '<text x="' + (barX + barW / 2) + '" y="' + (topY - 8) + '" text-anchor="middle" font-size="12" font-weight="700" fill="#333">' + total.toLocaleString() + "</text>";
+      }
+    } else {
+      // grouped mode: mini pills side by side
+      var n = series.length;
+      var miniGap = 4;
+      var miniW = Math.min(22, (groupW - miniGap * (n - 1)) / n * 0.85);
+      var totalGroupW = miniW * n + miniGap * (n - 1);
+      var startX = sidePad + groupW * ci + (groupW - totalGroupW) / 2;
+
+      series.forEach(function (ser, si) {
+        var val = ser.values[ci] || 0;
+        var segH = Math.max(val * scale, 2);
+        var barX = startX + si * (miniW + miniGap);
+        var topY = baselineY - segH;
+        var color = colorFor(ser.name, si);
+        var light = shadeColor(color, 22);
+        var gid = "grpGrad" + ci + "_" + si;
+        var pillRadius = miniW / 2;
+
+        defs += '<linearGradient id="' + gid + '" x1="0%" y1="0%" x2="100%" y2="0%">' +
+                  '<stop offset="0%" stop-color="' + light + '"/>' +
+                  '<stop offset="55%" stop-color="' + color + '"/>' +
+                  '<stop offset="100%" stop-color="' + shadeColor(color, -12) + '"/>' +
+                '</linearGradient>';
+
+        shadows += '<ellipse cx="' + (barX + miniW / 2) + '" cy="' + (baselineY + 3) + '" rx="' + (miniW * 0.55) + '" ry="3" fill="rgba(20,20,40,0.15)"/>';
+
+        bars += '<rect class="bar-seg" data-cat="' + ci + '" data-series="' + si + '" x="' + barX + '" y="' + topY + '" width="' + miniW + '" height="' + segH + '" rx="' + pillRadius + '" ry="' + pillRadius + '" fill="url(#' + gid + ')"/>';
+        bars += '<rect x="' + (barX + miniW * 0.14) + '" y="' + topY + '" width="' + (miniW * 0.24) + '" height="' + segH + '" rx="' + (miniW * 0.12) + '" fill="rgba(255,255,255,0.35)" style="pointer-events:none"/>';
+
+        if (SHOW_TOTAL_LABEL) {
+          labels += '<text x="' + (barX + miniW / 2) + '" y="' + (topY - 6) + '" text-anchor="middle" font-size="10" font-weight="700" fill="#333">' + val.toLocaleString() + "</text>";
+        }
+      });
+    }
+
+    // category label
+    labels += '<text x="' + (sidePad + groupW * ci + groupW / 2) + '" y="' + (baselineY + 16) + '" text-anchor="middle" font-size="11" fill="#666">' + cat + "</text>";
+  });
+
+  var baseline = '<line x1="' + sidePad + '" y1="' + baselineY + '" x2="' + (W - sidePad) + '" y2="' + baselineY + '" stroke="rgba(0,0,0,0.12)" stroke-width="1"/>';
+
+  svg.innerHTML = "<defs>" + defs + "</defs>" + shadows + bars + baseline + labels;
+
+  // hover + click wiring
+  Array.prototype.forEach.call(svg.querySelectorAll(".bar-seg"), function (el) {
+    el.addEventListener("mouseenter", function () {
+      showTooltip(parseInt(this.getAttribute("data-cat"), 10), parseInt(this.getAttribute("data-series"), 10));
+    });
+    el.addEventListener("mousemove", moveTooltip);
+    el.addEventListener("mouseleave", hideTooltip);
+    el.addEventListener("click", function () {
+      sendSelectionToVA(parseInt(this.getAttribute("data-cat"), 10));
+    });
+  });
+
+  renderLegend(series);
+}
+
+/* ===========================================================
+   TOOLTIP
+=========================================================== */
+function showTooltip(catIdx, seriesIdx) {
+  if (!lastCategories || !lastSeries) return;
+  var cat = lastCategories[catIdx];
+  var ser = lastSeries[seriesIdx];
+  var val = ser.values[catIdx] || 0;
+  var color = colorFor(ser.name, seriesIdx);
+
+  var html = '<div class="tt-title"><span class="tt-swatch" style="background:' + color + '"></span>' + cat + " — " + ser.name + "</div>" +
+             "<div>" + val.toLocaleString() + "</div>";
+
+  if (BAR_MODE === "stacked" && lastSeries.length > 1) {
+    var total = lastSeries.reduce(function (s, se) { return s + (se.values[catIdx] || 0); }, 0);
+    html += '<div style="color:#bbb">Total: ' + total.toLocaleString() + "</div>";
+  }
+
+  var tip = document.getElementById("tooltip");
+  tip.innerHTML = html;
+  tip.style.display = "block";
+}
+
+function moveTooltip(evt) {
+  var tip = document.getElementById("tooltip");
+  var offset = 14;
+  var x = evt.clientX + offset;
+  var y = evt.clientY + offset;
+  var maxX = window.innerWidth - tip.offsetWidth - 8;
+  var maxY = window.innerHeight - tip.offsetHeight - 8;
+  if (x > maxX) x = evt.clientX - tip.offsetWidth - offset;
+  if (y > maxY) y = evt.clientY - tip.offsetHeight - offset;
+  tip.style.left = x + "px";
+  tip.style.top = y + "px";
+}
+
+function hideTooltip() {
+  document.getElementById("tooltip").style.display = "none";
+}
+
+/* ===========================================================
+   LEGEND
+=========================================================== */
+function renderLegend(series) {
+  var el = document.getElementById("legend");
+  el.innerHTML = "";
+  series.forEach(function (s, i) {
+    var color = colorFor(s.name, i);
+    var item = document.createElement("div");
+    item.className = "legend-item";
+    item.innerHTML = '<span class="swatch" style="background:' + color + '"></span><span>' + s.name + "</span>";
+    item.addEventListener("click", function () {
+      // simple visual toggle; full hide/show would need a re-render with filtered series
+      item.classList.toggle("disabled");
+    });
+    el.appendChild(item);
+  });
+}
+
+/* ===========================================================
+   SAS Visual Analytics Data-Driven Content messaging
+=========================================================== */
+function handleVAMessage(event) {
+  var msg = event.data;
+  if (!msg || typeof msg !== "object" || !msg.data || !msg.columns) return;
+
+  try {
+    var categories = [];
+    var catColIdx = -1;
+    var measureCols = [];
+
+    msg.columns.forEach(function (col, i) {
+      if (col.type === "string" && catColIdx === -1) {
+        catColIdx = i;
+      } else if (col.type === "number") {
+        measureCols.push({ idx: i, name: col.label || col.name || ("Measure " + (measureCols.length + 1)) });
+      }
+    });
+
+    if (catColIdx === -1 || measureCols.length === 0) return;
+
+    msg.data.forEach(function (row) {
+      categories.push(String(row[catColIdx]));
+    });
+
+    var series = measureCols.map(function (m) {
+      return {
+        name: m.name,
+        values: msg.data.map(function (row) { return Number(row[m.idx]) || 0; })
+      };
+    });
+
+    renderBars(categories, series);
+  } catch (e) {
+    console.error("Error parsing VA message:", e);
+  }
+}
+
+function sendSelectionToVA(rowIndex) {
+  if (window.parent === window) return;
+  window.parent.postMessage({
+    version: "1.0",
+    resultName: window.__resultName || "barDDC3D",
+    selections: [{ row: rowIndex }]
+  }, "*");
+}
+
+window.addEventListener("message", handleVAMessage);
+window.addEventListener("resize", function () {
+  if (lastCategories && lastSeries) renderBars(lastCategories, lastSeries);
+});
+
+/* Initial render with sample data (works standalone in a browser too) */
+renderBars(sampleData.categories, sampleData.series);
+</script>
+
+</body>
+</html>
