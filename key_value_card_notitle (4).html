@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Key Value Card (No Title) - SAS VA Data-Driven Content</title>
+<style>
+  :root {
+    --card-bg: #ffffff;
+    --card-radius: 14px;
+    --card-shadow: 0 2px 10px rgba(20, 20, 30, 0.06);
+    --value-color: #16a34a;
+    --font: "Segoe UI", Arial, sans-serif;
+  }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    font-family: var(--font);
+    background: transparent;
+  }
+
+  .card {
+    box-sizing: border-box;
+    width: 100%;
+    height: 100%;
+    background: var(--card-bg);
+    border-radius: var(--card-radius);
+    box-shadow: var(--card-shadow);
+    padding: 8px 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  #keyvalue {
+    font-size: 12vw;
+    font-weight: 800;
+    color: var(--value-color);
+    text-align: center;
+    line-height: 1;
+  }
+</style>
+</head>
+<body>
+
+<div class="card">
+  <div id="keyvalue">0</div>
+</div>
+
+<script>
+  // ---- CONFIG ----
+  var ANIMATION_DURATION_MS = 1500;
+  var DECIMAL_PLACES = 0;
+  var USE_THOUSANDS_SEPARATOR = true;
+
+  var currentValue = 0;
+  var animationFrame = null;
+
+  function formatNumber(num) {
+    var fixed = num.toFixed(DECIMAL_PLACES);
+    if (!USE_THOUSANDS_SEPARATOR) return fixed;
+    var parts = fixed.split(".");
+    parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+    return parts.join(".");
+  }
+
+  function easeOutQuad(t) { return t * (2 - t); }
+
+  function animateTo(target) {
+    if (animationFrame) cancelAnimationFrame(animationFrame);
+    var start = currentValue;
+    var change = target - start;
+    var startTime = null;
+
+    function step(timestamp) {
+      if (!startTime) startTime = timestamp;
+      var progress = Math.min((timestamp - startTime) / ANIMATION_DURATION_MS, 1);
+      var eased = easeOutQuad(progress);
+      var value = start + change * eased;
+      document.getElementById("keyvalue").innerText = formatNumber(value);
+
+      if (progress < 1) {
+        animationFrame = requestAnimationFrame(step);
+      } else {
+        currentValue = target;
+        document.getElementById("keyvalue").innerText = formatNumber(target);
+      }
+    }
+    animationFrame = requestAnimationFrame(step);
+  }
+
+  // ---- SAS VA MESSAGE CONTRACT ----
+  // SAS VA sends data messages as event.data directly.
+  // There is no "type" field to switch on. A valid data message has
+  // "columns" and "data" (and rowCount >= 0). Anything else, ignore.
+  window.addEventListener("message", function (event) {
+    var msg = event.data;
+    if (!msg || !msg.columns || !msg.data) return;
+
+    var columns = msg.columns;
+    var rows = msg.data;
+    if (rows.length === 0 || columns.length === 0) return;
+
+    // Locate the first numeric column — that's the only thing this
+    // card displays.
+    var numColIndex = -1;
+    for (var i = 0; i < columns.length; i++) {
+      if (columns[i].usage === "brush") continue; // skip the optional selection column
+      if (numColIndex === -1 && columns[i].type === "number") { numColIndex = i; break; }
+    }
+
+    if (numColIndex !== -1) {
+      var rawValue = Number(rows[0][numColIndex]);
+      if (!isNaN(rawValue)) {
+        // SAS sends percent-formatted measures as a raw fraction (1 = 100%, 0.43 = 43%).
+        var col = columns[numColIndex];
+        var isPercentFormat = col.format && /PERCENT/i.test(col.format.name || "");
+        var value = isPercentFormat ? rawValue * 100 : rawValue;
+        animateTo(value);
+      }
+    }
+  });
+</script>
+
+</body>
+</html>
