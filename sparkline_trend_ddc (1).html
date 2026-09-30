@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Sparkline Trend - DDC</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    background: transparent;
+    overflow: hidden;
+  }
+  #wrapper {
+    width: 100%;
+    height: 100%;
+    display: flex;
+  }
+  #sparkSvg { width: 100%; height: 100%; display: block; }
+</style>
+</head>
+<body>
+
+<div id="wrapper">
+  <svg id="sparkSvg"></svg>
+</div>
+
+<script>
+/* ===========================================================
+   CONFIG
+=========================================================== */
+var UP_COLOR   = "#16a34a"; // green
+var DOWN_COLOR = "#dc2626"; // red
+var FLAT_COLOR = "#6b7280"; // grey (used only if first === last exactly)
+
+var LINE_WIDTH = 2;
+var SHOW_AREA_FILL = true;
+var SHOW_END_MARKER = true; // circle on the last point, like the reference image
+var MARKER_RADIUS = 3.5;
+var MARKER_RING = true;     // soft glow ring around the marker
+
+// How trend direction is decided:
+//   "endpoints" -> compares the last value to the first value (simple, matches the reference)
+//   "slope"     -> least-squares trend across all points (steadier with noisy data)
+var TREND_MODE = "endpoints";
+
+/* Sample/fallback data so this previews standalone in a browser too. */
+var sampleValues = [3, 5, 4, 7, 6, 9, 8, 11, 10, 13, 12, 15, 17, 16, 19];
+
+var lastValues = null;
+
+/* ===========================================================
+   HELPERS
+=========================================================== */
+function catmullRomPath(points) {
+  if (points.length < 2) return "";
+  var d = "M" + points[0][0] + "," + points[0][1] + " ";
+  for (var i = 0; i < points.length - 1; i++) {
+    var p0 = points[i === 0 ? 0 : i - 1];
+    var p1 = points[i];
+    var p2 = points[i + 1];
+    var p3 = points[i + 2 === points.length ? i + 1 : i + 2];
+    var cp1x = p1[0] + (p2[0] - p0[0]) / 6;
+    var cp1y = p1[1] + (p2[1] - p0[1]) / 6;
+    var cp2x = p2[0] - (p3[0] - p1[0]) / 6;
+    var cp2y = p2[1] - (p3[1] - p1[1]) / 6;
+    d += "C" + cp1x + "," + cp1y + " " + cp2x + "," + cp2y + " " + p2[0] + "," + p2[1] + " ";
+  }
+  return d;
+}
+
+function trendSlope(values) {
+  var n = values.length;
+  var sumX = 0, sumY = 0, sumXY = 0, sumXX = 0;
+  values.forEach(function (y, x) {
+    sumX += x; sumY += y; sumXY += x * y; sumXX += x * x;
+  });
+  var denom = (n * sumXX - sumX * sumX);
+  return denom === 0 ? 0 : (n * sumXY - sumX * sumY) / denom;
+}
+
+/* ===========================================================
+   RENDER
+=========================================================== */
+function renderSparkline(values) {
+  lastValues = values;
+
+  // Measure the actual wrapper element, not the browser window — more
+  // reliable inside a small VA iframe than window.innerWidth/innerHeight.
+  var wrap = document.getElementById("wrapper");
+  var W = wrap.clientWidth || 200;
+  var H = wrap.clientHeight || 80;
+
+  var svg = document.getElementById("sparkSvg");
+  svg.setAttribute("viewBox", "0 0 " + W + " " + H);
+  svg.setAttribute("width", W);
+  svg.setAttribute("height", H);
+
+  var pad = 6;
+  var plotW = W - pad * 2;
+  var plotH = H - pad * 2;
+
+  var minV = Math.min.apply(null, values);
+  var maxV = Math.max.apply(null, values);
+  if (maxV === minV) { maxV += 1; minV -= 1; }
+
+  var n = values.length;
+  var points = values.map(function (v, i) {
+    var x = pad + (n === 1 ? plotW / 2 : (plotW * i) / (n - 1));
+    var y = pad + plotH - ((v - minV) / (maxV - minV)) * plotH;
+    return [x, y];
+  });
+
+  // decide trend direction/color
+  var isUp;
+  if (TREND_MODE === "slope") {
+    isUp = trendSlope(values) >= 0;
+  } else {
+    isUp = values[values.length - 1] >= values[0];
+  }
+  var exactFlat = values[values.length - 1] === values[0];
+  var color = exactFlat ? FLAT_COLOR : (isUp ? UP_COLOR : DOWN_COLOR);
+
+  var linePath = catmullRomPath(points);
+
+  var defs = "";
+  var areaEl = "";
+  if (SHOW_AREA_FILL) {
+    var gid = "sparkFill";
+    defs += '<linearGradient id="' + gid + '" x1="0%" y1="0%" x2="0%" y2="100%">' +
+              '<stop offset="0%" stop-color="' + color + '" stop-opacity="0.28"/>' +
+              '<stop offset="100%" stop-color="' + color + '" stop-opacity="0"/>' +
+            '</linearGradient>';
+    var last = points[points.length - 1];
+    var first = points[0];
+    var areaPath = linePath + " L" + last[0] + "," + (pad + plotH) + " L" + first[0] + "," + (pad + plotH) + " Z";
+    areaEl = '<path d="' + areaPath + '" fill="url(#' + gid + ')" stroke="none"/>';
+  }
+
+  var lineEl = '<path d="' + linePath + '" fill="none" stroke="' + color + '" stroke-width="' + LINE_WIDTH + '" stroke-linecap="round" stroke-linejoin="round"/>';
+
+  var markerEl = "";
+  if (SHOW_END_MARKER) {
+    var ep = points[points.length - 1];
+    if (MARKER_RING) {
+      markerEl += '<circle cx="' + ep[0] + '" cy="' + ep[1] + '" r="' + (MARKER_RADIUS * 2.4) + '" fill="' + color + '" opacity="0.18"/>';
+    }
+    markerEl += '<circle cx="' + ep[0] + '" cy="' + ep[1] + '" r="' + MARKER_RADIUS + '" fill="#fff" stroke="' + color + '" stroke-width="2"/>';
+  }
+
+  svg.innerHTML = "<defs>" + defs + "</defs>" + areaEl + lineEl + markerEl;
+}
+
+/* ===========================================================
+   SAS Visual Analytics Data-Driven Content messaging
+=========================================================== */
+function handleVAMessage(event) {
+  var msg = event.data;
+  if (!msg || typeof msg !== "object" || !msg.data || !msg.columns) return;
+
+  try {
+    var measColIdx = -1;
+    msg.columns.forEach(function (col, i) {
+      if (col.type === "number" && measColIdx === -1) measColIdx = i;
+    });
+
+    if (measColIdx === -1 || !msg.data.length) return;
+
+    var values = msg.data.map(function (row) { return Number(row[measColIdx]) || 0; });
+    renderSparkline(values);
+  } catch (e) {
+    console.error("Error parsing VA message:", e);
+  }
+}
+
+window.addEventListener("message", handleVAMessage);
+
+// ResizeObserver catches the iframe's own box changing size, which a
+// plain window "resize" listener can miss inside a VA object.
+if (window.ResizeObserver) {
+  var ro = new ResizeObserver(function () {
+    if (lastValues) renderSparkline(lastValues);
+  });
+  ro.observe(document.getElementById("wrapper"));
+} else {
+  window.addEventListener("resize", function () {
+    if (lastValues) renderSparkline(lastValues);
+  });
+}
+
+/* Initial render with sample data (works standalone in a browser too) */
+renderSparkline(sampleValues);
+</script>
+
+</body>
+</html>
