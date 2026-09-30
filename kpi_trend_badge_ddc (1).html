@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>KPI Trend Badge - DDC</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    background: transparent;
+    overflow: hidden;
+  }
+  #wrapper {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  #badge {
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.2s ease;
+  }
+  #badge svg { width: 22px; height: 22px; }
+</style>
+</head>
+<body>
+
+<div id="wrapper">
+  <div id="badge">
+    <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path id="trendPath" d="M3 17l5-5 4 4 8-8" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+      <path id="arrowHead" d="M15 8h5v5" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+  </div>
+</div>
+
+<script>
+/* ===========================================================
+   CONFIG
+=========================================================== */
+// Colors: [background tint, icon color]
+var POSITIVE_COLORS = ["#dcfce7", "#16a34a"]; // light green bg, green icon
+var NEGATIVE_COLORS = ["#fee2e2", "#dc2626"]; // light red bg, red icon
+var ZERO_COLORS      = ["#f1f5f9", "#64748b"]; // light grey bg, grey icon
+
+var sampleValue = 12.4; // preview value when opened standalone
+
+/* ===========================================================
+   RENDER
+=========================================================== */
+function renderBadge(value) {
+  var badge = document.getElementById("badge");
+  var trendPath = document.getElementById("trendPath");
+  var arrowHead = document.getElementById("arrowHead");
+
+  var colors, isUp;
+  if (value > 0) {
+    colors = POSITIVE_COLORS;
+    isUp = true;
+  } else if (value < 0) {
+    colors = NEGATIVE_COLORS;
+    isUp = false;
+  } else {
+    colors = ZERO_COLORS;
+    isUp = true;
+  }
+
+  badge.style.background = colors[0];
+  trendPath.setAttribute("stroke", colors[1]);
+  arrowHead.setAttribute("stroke", colors[1]);
+
+  if (value === 0) {
+    trendPath.setAttribute("d", "M3 12h18");
+    arrowHead.setAttribute("d", "");
+  } else if (isUp) {
+    trendPath.setAttribute("d", "M3 17l5-5 4 4 8-8");
+    arrowHead.setAttribute("d", "M15 8h5v5");
+  } else {
+    trendPath.setAttribute("d", "M3 7l5 5 4-4 8 8");
+    arrowHead.setAttribute("d", "M15 16h5v-5");
+  }
+}
+
+/* ===========================================================
+   SAS Visual Analytics Data-Driven Content messaging
+=========================================================== */
+function handleVAMessage(event) {
+  var msg = event.data;
+  if (!msg || typeof msg !== "object" || !msg.data || !msg.columns) return;
+
+  try {
+    var measColIdx = -1;
+    msg.columns.forEach(function (col, i) {
+      if (col.type === "number" && measColIdx === -1) measColIdx = i;
+    });
+
+    if (measColIdx === -1 || !msg.data.length) return;
+
+    var value = Number(msg.data[0][measColIdx]) || 0;
+    renderBadge(value);
+  } catch (e) {
+    console.error("Error parsing VA message:", e);
+  }
+}
+
+window.addEventListener("message", handleVAMessage);
+
+/* Initial render with sample data (works standalone in a browser too) */
+renderBadge(sampleValue);
+</script>
+
+</body>
+</html>
