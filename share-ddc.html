@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Share tile – SAS VA DDC</title>
+<!--
+  SAS Visual Analytics – Data-Driven Content (DDC)
+  بطاقة نسبة ديناميكية: رقم كبير + شريط نسب + قيم كل فئة.
+
+  Roles → Variables (بالترتيب):
+    1) عمود الفئة  (مثال: طريقة التقديم)
+    2) المقياس      (مثال: عدد البلاغات)
+
+  إعدادات من الرابط (اختيارية):
+    ?title=البلاغات حسب طريقة التقديم   عنوان أعلى البطاقة (اتركه فارغًا إذا استخدمت عنوان VA)
+    &focus=إلكتروني                     الفئة التي تُعرض نسبتها (الافتراضي: الأكبر)
+    &unit=بلاغ                          الكلمة بعد الإجمالي «438 من 439 بلاغ»
+
+  الخط: Almarai من مجلد fonts/ بجانب الملف أو من Google Fonts.
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Almarai:wght@400;700;800&display=swap" rel="stylesheet">
+<style>
+  @font-face{font-family:'Almarai Local';font-weight:400;src:url('fonts/Almarai-Regular.ttf') format('truetype')}
+  @font-face{font-family:'Almarai Local';font-weight:700;src:url('fonts/Almarai-Bold.ttf') format('truetype')}
+  @font-face{font-family:'Almarai Local';font-weight:800;src:url('fonts/Almarai-ExtraBold.ttf') format('truetype')}
+  :root{ --green:#1F5B3A; --ink:#1A1F1C; --ink-2:#4A524D; --muted:#6B736E;
+         --font:'Almarai','Almarai Local','IBM Plex Sans Arabic','Segoe UI',Tahoma,sans-serif; }
+  html,body{margin:0;height:100%;background:#FFFFFF;color:var(--ink);font-family:var(--font);overflow:hidden}
+  #tile{position:absolute;inset:0;box-sizing:border-box;padding:clamp(10px,4vh,20px) clamp(12px,4vw,22px);
+        display:flex;flex-direction:column;justify-content:center;gap:clamp(4px,2vh,10px)}
+  #title{font-size:14px;font-weight:700;color:var(--ink-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+  #pct{font-size:clamp(28px,18vh,46px);font-weight:800;color:var(--green);line-height:1.1;direction:ltr;unicode-bidi:isolate;font-variant-numeric:tabular-nums}
+  #focus{font-size:clamp(13px,6vh,17px);font-weight:700;color:var(--ink-2)}
+  #of{font-size:13px;color:var(--muted)}
+  #of b{color:var(--ink-2);font-weight:700}
+  #bar{display:flex;gap:2px;height:clamp(6px,3.5vh,10px);border-radius:5px;overflow:hidden;background:#F1F3F1;margin-top:4px}
+  #bar div{height:100%;cursor:pointer;transition:opacity .15s;transform-origin:right}
+  #legend{display:flex;flex-wrap:wrap;gap:6px 16px;font-size:12.5px;color:var(--ink-2)}
+  .lg{display:flex;align-items:center;gap:6px;cursor:pointer;background:none;border:0;padding:2px 0;font:inherit;color:inherit}
+  .lg i{width:9px;height:9px;border-radius:2px;display:inline-block}
+  .lg b{font-weight:700;color:var(--ink);font-variant-numeric:tabular-nums}
+  .lg span.p{color:var(--muted)}
+  .dim #bar div{opacity:.3} .dim #bar div.sel{opacity:1}
+  .dim .lg{opacity:.45} .dim .lg.sel{opacity:1}
+  #msg{position:absolute;inset:0;display:none;align-items:center;justify-content:center;text-align:center;color:var(--muted);font-size:13px;line-height:1.8;padding:16px;white-space:pre-line;background:#fff}
+  @keyframes grow{from{transform:scaleX(0)}to{transform:scaleX(1)}}
+  .grow{animation:grow .6s cubic-bezier(.2,.7,.2,1) both}
+  @media (prefers-reduced-motion: reduce){ .grow{animation:none} }
+  @media (max-height:110px){ #legend{display:none} }
+</style>
+</head>
+<body>
+<div id="tile">
+  <div id="title"></div>
+  <div class="head"><span id="pct"></span><span id="focus"></span></div>
+  <div id="of"></div>
+  <div id="bar" role="img"></div>
+  <div id="legend"></div>
+</div>
+<div id="msg"></div>
+
+<script>
+/* ============================ الإعدادات ============================ */
+var CONFIG = {
+  colors: ['#1F5B3A', '#B8955A', '#7FB094', '#D9C49A', '#9AA39E'], // الفئة المختارة تأخذ اللون الأول
+  decimals: 1,          // منازل النسبة المئوية
+  minSegmentPx: 4,      // أقل عرض لأي فئة غير صفرية حتى تبقى مرئية
+  locale: 'en-US'
+};
+var qs = new URLSearchParams(location.search);
+var TITLE = qs.get('title') || '', FOCUS = qs.get('focus') || '', UNIT = qs.get('unit') || '';
+var DEBUG = qs.get('debug') === '1';
+var inVA = window.parent && window.parent !== window;
+var state = { resultName: null, model: null, selected: {} };
+
+var $ = function (id) { return document.getElementById(id); };
+$('title').textContent = TITLE; $('title').style.display = TITLE ? '' : 'none';
+
+/* ======================= الاتصال مع SAS VA ======================= */
+window.addEventListener('message', function (e) {
+  var d = e.data;
+  if (typeof d === 'string') { try { d = JSON.parse(d); } catch (x) { return; } }
+  if (!d || typeof d !== 'object' || !d.hasOwnProperty('data')) return;
+  if (DEBUG) console.log('DDC payload', d);
+  state.resultName = d.resultName; state.selected = {};
+  var m = buildModel(Array.isArray(d.columns) ? d.columns : [], Array.isArray(d.data) ? d.data : []);
+  if (m.error) { state.model = null; showMessage(m.error); post({ resultName: state.resultName, message: m.error }); return; }
+  state.model = m; $('msg').style.display = 'none'; render(true);
+});
+function post(msg) {
+  if (!inVA || !state.resultName) return;
+  var t = '*'; try { if (document.referrer) t = new URL(document.referrer).origin; } catch (x) {}
+  window.parent.postMessage(msg, t);
+}
+
+/* ========================= نموذج البيانات ========================= */
+var NUM = { number:1, double:1, numeric:1, integer:1, int:1, decimal:1, currency:1 };
+function isNum(c, rows, i) {
+  if (c.type) return !!NUM[String(c.type).toLowerCase()];
+  for (var r = 0; r < rows.length; r++) { var v = rows[r][i]; if (v !== null && v !== undefined && v !== '') return typeof v === 'number'; }
+  return false;
+}
+function buildModel(cols, rows) {
+  var help = 'أسند في Roles → Variables:\n1) عمود الفئة (مثل: طريقة التقديم)\n2) مقياس (مثل: عدد البلاغات)';
+  if (rows.length && !Array.isArray(rows[0])) rows = rows.map(function (o) { return cols.map(function (c) { return o[c.name]; }); });
+  var catCol = -1, valCol = -1;
+  cols.forEach(function (c, i) { if (isNum(c, rows, i)) { if (valCol < 0) valCol = i; } else if (catCol < 0) catCol = i; });
+  if (catCol < 0 || valCol < 0) return { error: help };
+
+  var idx = {}, cats = [], total = 0;
+  rows.forEach(function (r, ri) {
+    var k = r[catCol]; k = (k === null || k === undefined || k === '') ? '(فارغ)' : String(k).trim();
+    if (!(k in idx)) { idx[k] = cats.length; cats.push({ label: k, v: 0, rows: [] }); }
+    var v = Number(r[valCol]); if (isFinite(v) && v > 0) { cats[idx[k]].v += v; total += v; }
+    cats[idx[k]].rows.push(ri);
+  });
+  if (!cats.length || total <= 0) return { error: 'لا توجد بيانات للمرشحات الحالية' };
+  cats.sort(function (a, b) { return b.v - a.v; });
+
+  // الفئة المختارة أولًا (لونها الأخضر)
+  var f = FOCUS ? cats.findIndex(function (c) { return c.label === FOCUS; }) : 0;
+  if (f > 0) cats.unshift(cats.splice(f, 1)[0]);
+  cats.forEach(function (c, i) { c.color = CONFIG.colors[i % CONFIG.colors.length]; c.share = c.v / total; });
+  return { cats: cats, total: total, measure: cols[valCol].label || cols[valCol].name };
+}
+
+/* ============================ العرض ============================ */
+function n(v) { return v.toLocaleString(CONFIG.locale, { maximumFractionDigits: 2 }); }
+function pct(s) {
+  var p = s * 100, d = CONFIG.decimals;
+  if (p > 0 && p < Math.pow(10, -d)) return '<' + Math.pow(10, -d) + '%';
+  return (Math.round(p * Math.pow(10, d)) / Math.pow(10, d)).toLocaleString(CONFIG.locale, { maximumFractionDigits: d }) + '%';
+}
+
+function render(animate) {
+  var m = state.model; if (!m) return;
+  var focus = m.cats[0];
+  $('pct').textContent = pct(focus.share);
+  $('focus').textContent = focus.label;
+  $('of').innerHTML = '';
+  var b1 = document.createElement('b'); b1.textContent = n(focus.v);
+  var b2 = document.createElement('b'); b2.textContent = n(m.total);
+  $('of').append(b1, ' من ', b2, UNIT ? ' ' + UNIT : '');
+
+  // الشريط — مع حد أدنى لعرض الفئات الصغيرة
+  var bar = $('bar'), W = bar.clientWidth || 300, gaps = 2 * (m.cats.length - 1);
+  var nz = m.cats.filter(function (c) { return c.v > 0; });
+  var minTotal = nz.length * CONFIG.minSegmentPx, avail = Math.max(0, W - gaps - minTotal);
+  bar.innerHTML = '';
+  bar.setAttribute('aria-label', m.cats.map(function (c) { return c.label + ' ' + pct(c.share); }).join('، '));
+  m.cats.forEach(function (c, i) {
+    if (c.v <= 0) return;
+    var seg = document.createElement('div');
+    seg.style.width = (CONFIG.minSegmentPx + avail * c.share) + 'px';
+    seg.style.background = c.color; seg.title = c.label + ': ' + n(c.v) + ' (' + pct(c.share) + ')';
+    if (state.selected[c.label]) seg.className = 'sel';
+    if (animate) { seg.classList.add('grow'); seg.style.animationDelay = (i * 80) + 'ms'; }
+    seg.onclick = function (ev) { ev.stopPropagation(); select(c, ev.ctrlKey || ev.metaKey || ev.shiftKey); };
+    bar.appendChild(seg);
+  });
+
+  // القيم
+  var lg = $('legend'); lg.innerHTML = '';
+  m.cats.forEach(function (c) {
+    var b = document.createElement('button'); b.type = 'button';
+    b.className = 'lg' + (state.selected[c.label] ? ' sel' : '');
+    b.innerHTML = '<i></i><span class="l"></span><b></b><span class="p"></span>';
+    b.querySelector('i').style.background = c.color;
+    b.querySelector('.l').textContent = c.label;
+    b.querySelector('b').textContent = n(c.v);
+    b.querySelector('.p').textContent = '(' + pct(c.share) + ')';
+    b.onclick = function (ev) { ev.stopPropagation(); select(c, ev.ctrlKey || ev.metaKey || ev.shiftKey); };
+    lg.appendChild(b);
+  });
+  $('tile').className = Object.keys(state.selected).length ? 'dim' : '';
+}
+
+function select(c, additive) {
+  if (additive) { if (state.selected[c.label]) delete state.selected[c.label]; else state.selected[c.label] = true; }
+  else { var only = state.selected[c.label] && Object.keys(state.selected).length === 1; state.selected = {}; if (!only) state.selected[c.label] = true; }
+  var rows = []; state.model.cats.forEach(function (x) { if (state.selected[x.label]) rows = rows.concat(x.rows); });
+  post({ resultName: state.resultName, selections: rows.map(function (r) { return { row: r }; }) });
+  render(false);
+}
+document.addEventListener('click', function () {
+  if (state.model && Object.keys(state.selected).length) { state.selected = {}; post({ resultName: state.resultName, selections: [] }); render(false); }
+});
+
+function showMessage(t) { $('msg').textContent = t; $('msg').style.display = 'flex'; }
+var rt; new ResizeObserver(function () { clearTimeout(rt); rt = setTimeout(function () { render(false); }, 80); }).observe(document.body);
+
+if (inVA) showMessage('في انتظار البيانات من SAS VA…');
+else window.postMessage({ resultName: 'preview',
+  columns: [{ name: 'm', label: 'طريقة التقديم', type: 'string' }, { name: 'n', label: 'عدد البلاغات', type: 'number' }],
+  data: [['إلكتروني', 438], ['يدوي', 1]] }, '*');
+</script>
+</body>
+</html>
