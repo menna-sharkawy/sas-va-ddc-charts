@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bar chart – SAS VA DDC</title>
+<!--
+  SAS Visual Analytics – Data-Driven Content (DDC)
+  مخطط أعمدة ديناميكي: عمود واحد لكل قيمة في عمود الفئة.
+
+  Roles → Variables (بالترتيب):
+    1) عمود الفئة  (مثال: نوع البلاغ)          ← يحدد عدد الأعمدة
+    2) المقياس الأول  (مثال: إجمالي الحركات)   ← العمود الأول (يمين)
+    3) المقياس الثاني (مثال: عدد البلاغات)     ← العمود الثاني
+  لكل مقياس مقياس رسم مستقل، والقيمة الحقيقية مكتوبة فوق العمود.
+  لا تُسند أعمدة فئات أخرى (مثل التاريخ) حتى يجمّع VA القيم لكل فئة بشكل صحيح.
+
+  بدون مكتبات خارجية — يعمل على شبكة مغلقة. أضف ?debug=1 للرابط لعرض البيانات الواردة.
+-->
+<style>
+  :root{ --ink:#1A1F1C; --ink-2:#4A524D; --muted:#6B736E; --axis:#C9CFCA;
+         --font:'IBM Plex Sans Arabic','Segoe UI',Tahoma,Arial,sans-serif; }
+  html,body{margin:0;height:100%;background:#FFFFFF;color:var(--ink);font-family:var(--font);overflow:hidden}
+  #chart{position:absolute;inset:0}
+  svg{display:block;width:100%;height:100%}
+  .bar{cursor:pointer;transition:opacity .15s}
+  .dim .bar{opacity:.3} .dim .bar.sel{opacity:1}
+  .val{font-size:13px;font-weight:600;fill:var(--ink-2);font-variant-numeric:tabular-nums}
+  .cat{font-size:13px;font-weight:600;fill:var(--ink)}
+  .mname{font-size:11px;fill:var(--muted)}
+  #tip{position:absolute;pointer-events:none;background:#1A1F1C;color:#fff;font-size:12.5px;line-height:1.7;padding:8px 10px;border-radius:8px;white-space:nowrap;opacity:0;transition:opacity .1s;z-index:5}
+  #msg{position:absolute;inset:0;display:none;align-items:center;justify-content:center;text-align:center;color:var(--muted);font-size:13.5px;line-height:1.8;padding:20px;white-space:pre-line}
+  @keyframes grow{from{transform:scaleY(0)}to{transform:scaleY(1)}}
+  .grow{transform-box:fill-box;transform-origin:bottom;animation:grow .5s cubic-bezier(.2,.7,.2,1) both}
+  @media (prefers-reduced-motion: reduce){ .grow{animation:none} }
+</style>
+</head>
+<body>
+<div id="chart"><div id="tip"></div><div id="msg"></div></div>
+
+<script>
+/* ============================ الإعدادات ============================ */
+var CONFIG = {
+  colors: ['#1F5B3A', '#B8955A', '#7FB094', '#9AA39E'], // لون كل مقياس بترتيب الإسناد
+  maxMeasures: 2,          // عدد الأعمدة لكل فئة (مقياس لكل عمود)
+  independentScales: true, // كل مقياس بمقياس رسم خاص (المبلغ بالملايين والعدد بالمئات)
+  showMeasureNames: true,  // اسم المقياس أسفل كل عمود بدل المفتاح
+  units: ['', ''],         // وحدة اختيارية بعد الرقم لكل مقياس، مثل: ['ر.س', 'بلاغ']
+  sort: 'desc',            // 'desc' | 'asc' | 'none'
+  maxCategories: 15,       // ما زاد يُدمج في «أخرى» (0 = بدون دمج)
+  otherLabel: 'أخرى',
+  compact: true,           // 919,393,775 ← 919.4 مليون
+  decimals: 1,             // منازل عشرية في الصيغة المختصرة
+  barMaxWidth: 72,         // أقصى عرض للعمود بالبكسل
+  showValues: true,        // الرقم فوق العمود
+  locale: 'en-US'
+};
+
+/* ============================ الحالة ============================ */
+var state = { resultName: null, model: null, selected: {} };
+var chartEl = document.getElementById('chart'), tipEl = document.getElementById('tip'), msgEl = document.getElementById('msg');
+var SVGNS = 'http://www.w3.org/2000/svg';
+var inVA = window.parent && window.parent !== window;
+var DEBUG = /[?&]debug=1/.test(location.search);
+
+/* ======================= الاتصال مع SAS VA ======================= */
+window.addEventListener('message', function (e) {
+  var d = e.data;
+  if (typeof d === 'string') { try { d = JSON.parse(d); } catch (x) { return; } }
+  if (!d || typeof d !== 'object' || !d.hasOwnProperty('data')) return;
+  if (DEBUG) showDebug(d);
+  state.resultName = d.resultName;
+  state.selected = {};
+  var m = buildModel(Array.isArray(d.columns) ? d.columns : [], Array.isArray(d.data) ? d.data : []);
+  if (m.error) { state.model = null; showMessage(m.error); postToVA({ resultName: state.resultName, message: m.error }); return; }
+  state.model = m; msgEl.style.display = 'none'; render(true);
+});
+
+function postToVA(msg) {
+  if (!inVA || !state.resultName) return;
+  var target = '*';
+  try { if (document.referrer) target = new URL(document.referrer).origin; } catch (x) {}
+  window.parent.postMessage(msg, target);
+}
+
+/* ========================= نموذج البيانات ========================= */
+var NUM = { number: 1, double: 1, numeric: 1, integer: 1, int: 1, decimal: 1, currency: 1 };
+function isNum(c, rows, i) {
+  if (c.type) return !!NUM[String(c.type).toLowerCase()];
+  for (var r = 0; r < rows.length; r++) { var v = rows[r][i]; if (v !== null && v !== undefined && v !== '') return typeof v === 'number'; }
+  return false;
+}
+
+function buildModel(cols, rows) {
+  var help = 'أسند في Roles → Variables:\n1) عمود الفئة (مثل: نوع البلاغ)\n2) مقياس واحد على الأقل (مثل: عدد البلاغات)';
+  if (rows.length && !Array.isArray(rows[0])) rows = rows.map(function (o) { return cols.map(function (c) { return o[c.name]; }); });
+  if (!cols.length) return { error: help };
+
+  var catCol = -1, measures = [];
+  cols.forEach(function (c, i) {
+    if (isNum(c, rows, i)) measures.push(i); else if (catCol < 0) catCol = i;
+  });
+  if (catCol < 0 || !measures.length) return { error: help };
+  if (!rows.length) return { error: 'لا توجد بيانات للمرشحات الحالية' };
+
+  var index = {}, cats = [];
+  rows.forEach(function (r, ri) {
+    var k = r[catCol]; k = (k === null || k === undefined || k === '') ? '(فارغ)' : String(k).trim();
+    if (!(k in index)) { index[k] = cats.length; cats.push({ label: k, vals: measures.map(function () { return 0; }), rows: [] }); }
+    var c = cats[index[k]];
+    measures.forEach(function (mi, j) { var v = Number(r[mi]); if (isFinite(v)) c.vals[j] += v; });
+    c.rows.push(ri);
+  });
+
+  if (CONFIG.sort !== 'none') {
+    var dir = CONFIG.sort === 'asc' ? 1 : -1;
+    cats.sort(function (a, b) { return dir * (a.vals[0] - b.vals[0]); });
+  }
+  if (CONFIG.maxCategories && cats.length > CONFIG.maxCategories) {
+    var keep = cats.slice(0, CONFIG.maxCategories - 1), other = { label: CONFIG.otherLabel, vals: measures.map(function () { return 0; }), rows: [] };
+    cats.slice(CONFIG.maxCategories - 1).forEach(function (c) { c.vals.forEach(function (v, j) { other.vals[j] += v; }); other.rows = other.rows.concat(c.rows); });
+    cats = keep.concat([other]);
+  }
+  return { cats: cats, measureLabels: measures.map(function (i) { return cols[i].label || cols[i].name; }) };
+}
+
+/* ============================ التنسيق ============================ */
+function full(v) { return v.toLocaleString(CONFIG.locale, { maximumFractionDigits: 2 }); }
+function short(v) {
+  if (!CONFIG.compact) return full(v);
+  var a = Math.abs(v), o = { minimumFractionDigits: 0, maximumFractionDigits: CONFIG.decimals };
+  if (a >= 1e9) return (v / 1e9).toLocaleString(CONFIG.locale, o) + ' مليار';
+  if (a >= 1e6) return (v / 1e6).toLocaleString(CONFIG.locale, o) + ' مليون';
+  if (a >= 1e4) return (v / 1e3).toLocaleString(CONFIG.locale, o) + ' ألف';
+  return full(Math.round(v * 100) / 100);
+}
+
+/* ============================ الرسم ============================ */
+function el(n, a, p) { var x = document.createElementNS(SVGNS, n); for (var k in a) x.setAttribute(k, a[k]); if (p) p.appendChild(x); return x; }
+
+function render(animate) {
+  var old = chartEl.querySelector('svg'); if (old) old.remove();
+  var m = state.model; if (!m) return;
+  var W = chartEl.clientWidth, H = chartEl.clientHeight; if (W < 50 || H < 50) return;
+
+  var k = Math.min(CONFIG.maxMeasures, m.measureLabels.length);
+  var names = CONFIG.showMeasureNames && k > 1;
+  var padX = 12, padT = CONFIG.showValues ? 30 : 10, padB = names ? 62 : 42;
+  var pw = W - padX * 2, ph = H - padT - padB;
+
+  // الحد الأعلى: لكل مقياس على حدة، أو مشترك
+  var maxes = [];
+  for (var j = 0; j < k; j++) { var mx = 0; m.cats.forEach(function (c) { mx = Math.max(mx, c.vals[j]); }); maxes.push(mx > 0 ? mx : 1); }
+  if (!CONFIG.independentScales) { var all = Math.max.apply(null, maxes); maxes = maxes.map(function () { return all; }); }
+
+  var svg = el('svg', { viewBox: '0 0 ' + W + ' ' + H, role: 'img', 'aria-label': m.measureLabels.slice(0, k).join(' / ') });
+  svg.style.direction = 'ltr';
+  var g = el('g', { class: Object.keys(state.selected).length ? 'dim' : '' }, svg);
+  el('line', { x1: padX, x2: W - padX, y1: padT + ph, y2: padT + ph, stroke: 'var(--axis)' }, g);
+
+  var n = m.cats.length, slot = pw / n, gap = 6;
+  var bw = Math.min(CONFIG.barMaxWidth, (slot * 0.7 - (k - 1) * gap) / k);
+  var groupW = k * bw + (k - 1) * gap;
+
+  m.cats.forEach(function (c, i) {
+    var cx = W - padX - slot * (i + 0.5);      // RTL: الأكبر على اليمين
+    for (var j = 0; j < k; j++) {
+      var v = Math.max(0, c.vals[j]);
+      var h = v > 0 ? Math.max(2, ph * v / maxes[j]) : 0;
+      var x = cx + groupW / 2 - (j + 1) * bw - j * gap;   // المقياس الأول على اليمين
+      var y = padT + ph - h, r = Math.min(6, bw / 4, h);
+      var bar = el('path', {
+        d: 'M' + x + ',' + (y + h) + 'V' + (y + r) + 'Q' + x + ',' + y + ' ' + (x + r) + ',' + y + 'H' + (x + bw - r) + 'Q' + (x + bw) + ',' + y + ' ' + (x + bw) + ',' + (y + r) + 'V' + (y + h) + 'Z',
+        fill: CONFIG.colors[j % CONFIG.colors.length], class: 'bar' + (state.selected[c.label] ? ' sel' : '') + (animate ? ' grow' : '')
+      }, g);
+      if (animate) bar.style.animationDelay = (i * 40 + j * 60) + 'ms';
+      bar.addEventListener('mousemove', function (ev) { showTip(ev, c); });
+      bar.addEventListener('mouseleave', function () { tipEl.style.opacity = 0; });
+      bar.addEventListener('click', function (ev) { ev.stopPropagation(); select(c, ev.ctrlKey || ev.metaKey || ev.shiftKey); });
+
+      if (CONFIG.showValues) {
+        var t = el('text', { x: x + bw / 2, y: y - 8, 'text-anchor': 'middle', class: 'val' }, g);
+        t.textContent = short(v) + (CONFIG.units[j] ? ' ' + CONFIG.units[j] : '');
+      }
+      if (names) {
+        var mn = el('text', { x: x + bw / 2, y: padT + ph + 16, 'text-anchor': 'middle', class: 'mname' }, g);
+        mn.textContent = m.measureLabels[j]; mn.__full = m.measureLabels[j]; mn.__maxW = bw + gap;
+      }
+    }
+    var lb = el('text', { x: cx, y: padT + ph + (names ? 44 : 26), 'text-anchor': 'middle', class: 'cat' }, g);
+    lb.textContent = c.label; lb.__full = c.label;
+  });
+
+  svg.addEventListener('click', function () {
+    if (Object.keys(state.selected).length) { state.selected = {}; postToVA({ resultName: state.resultName, selections: [] }); render(false); }
+  });
+  chartEl.insertBefore(svg, tipEl);
+
+  // اختصار التسميات الطويلة بعد إضافتها للصفحة
+  svg.querySelectorAll('text.cat, text.mname').forEach(function (t) {
+    var s = t.__full, maxW = t.__maxW || slot - 8;
+    while (s.length > 2 && t.getComputedTextLength() > maxW) { s = s.slice(0, -1); t.textContent = s + '…'; }
+    if (s !== t.__full) { var tt = el('title', {}, t); tt.textContent = t.__full; }
+  });
+}
+
+/* ============================ التفاعل ============================ */
+function select(c, additive) {
+  if (additive) { if (state.selected[c.label]) delete state.selected[c.label]; else state.selected[c.label] = true; }
+  else { var only = state.selected[c.label] && Object.keys(state.selected).length === 1; state.selected = {}; if (!only) state.selected[c.label] = true; }
+  var rows = []; state.model.cats.forEach(function (x) { if (state.selected[x.label]) rows = rows.concat(x.rows); });
+  postToVA({ resultName: state.resultName, selections: rows.map(function (r) { return { row: r }; }) });
+  render(false);
+}
+
+function showTip(ev, c) {
+  tipEl.innerHTML = '';
+  var h = document.createElement('div'); h.style.fontWeight = '600'; h.textContent = c.label; tipEl.appendChild(h);
+  state.model.measureLabels.forEach(function (lbl, j) { var d = document.createElement('div'); d.textContent = lbl + ': ' + full(c.vals[j]); tipEl.appendChild(d); });
+  var r = chartEl.getBoundingClientRect(), x = ev.clientX - r.left, y = ev.clientY - r.top;
+  tipEl.style.opacity = 1;
+  tipEl.style.left = Math.min(Math.max(4, x - tipEl.offsetWidth / 2), r.width - tipEl.offsetWidth - 4) + 'px';
+  tipEl.style.top = Math.max(4, y - tipEl.offsetHeight - 12) + 'px';
+}
+
+function showMessage(t) { var s = chartEl.querySelector('svg'); if (s) s.remove(); msgEl.textContent = t; msgEl.style.display = 'flex'; }
+function showDebug(d) {
+  var b = document.getElementById('dbg');
+  if (!b) { b = document.createElement('pre'); b.id = 'dbg'; b.style.cssText = 'position:absolute;left:4px;bottom:4px;max-width:60%;max-height:45%;overflow:auto;margin:0;padding:6px 8px;background:#FFF8E6;border:1px solid #E5D3A8;border-radius:6px;font:11px/1.5 monospace;direction:ltr;text-align:left;z-index:9'; document.body.appendChild(b); }
+  b.textContent = 'rows: ' + (d.data || []).length + '\n' + (d.columns || []).map(function (c, i) { return i + ': ' + (c.label || c.name) + ' [' + c.type + ']'; }).join('\n') + '\nrow0: ' + JSON.stringify((d.data || [])[0]);
+}
+
+var rt; new ResizeObserver(function () { clearTimeout(rt); rt = setTimeout(function () { render(false); }, 80); }).observe(chartEl);
+
+if (inVA) showMessage('في انتظار البيانات من SAS VA…');
+else {
+  // معاينة خارج VA فقط
+  window.postMessage({ resultName: 'preview',
+    columns: [{ name: 'type', label: 'نوع البلاغ', type: 'string' }, { name: 'amt', label: 'إجمالي الحركات', type: 'number' }, { name: 'n', label: 'عدد البلاغات', type: 'number' }],
+    data: [['بلاغ عملية مشبوهة (STR)', 921411318, 337], ['بلاغ نشاط مشبوه (SAR)', 320076, 102]] }, '*');
+}
+</script>
+</body>
+</html>
