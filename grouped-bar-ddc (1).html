@@ -1,0 +1,391 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Grouped bar – SAS VA DDC</title>
+<!--
+  SAS Visual Analytics – Data-Driven Content (DDC)
+  مخطط أعمدة مجمّعة ديناميكي (مثل: إجمالي المبالغ حسب نوع العملية)
+
+  الأدوار (Roles → Variables) بأحد شكلين:
+   A) عريض (Wide):  [فئة] , [مقياس 1] , [مقياس 2] , ...
+      مثال: نوع العملية , مبلغ الاشتباه الرئيسي , مبلغ الدراسة المالية
+   B) طويل (Long):  [فئة] , [مجموعة] , [مقياس]
+      مثال: نوع العملية , نوع المبلغ , المبلغ
+  أسماء السلاسل في المفتاح تُقرأ من تسميات الأعمدة (Label) في VA.
+
+  بدون مكتبات خارجية — يعمل على شبكة مغلقة.
+-->
+<style>
+  :root{
+    --bg:#FFFFFF; --ink:#1A1F1C; --ink-2:#4A524D; --muted:#6B736E;
+    --grid:#E6E9E6; --axis:#C9CFCA;
+    --font:'IBM Plex Sans Arabic','Segoe UI',Tahoma,Arial,sans-serif;
+  }
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font-family:var(--font);overflow:hidden}
+  #root{position:absolute;inset:0;display:flex;flex-direction:column;padding:8px 14px 6px;box-sizing:border-box}
+  #legend{display:flex;flex-wrap:wrap;gap:6px 18px;font-size:13px;color:var(--ink-2);padding:2px 2px 6px;min-height:20px}
+  .lg{display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none;border:0;background:none;font:inherit;color:inherit;padding:2px 0}
+  .lg i{width:12px;height:12px;border-radius:3px;display:inline-block}
+  .lg.off{opacity:.35}
+  #chart{flex:1;min-height:0;position:relative}
+  svg{display:block;width:100%;height:100%}
+  .bar{cursor:pointer;transition:opacity .15s}
+  .dim .bar{opacity:.3}
+  .dim .bar.sel{opacity:1}
+  .val{font-size:12px;fill:var(--ink-2);font-variant-numeric:tabular-nums}
+  .cat{font-size:13px;fill:var(--ink-2)}
+  .tick{font-size:11px;fill:var(--muted);font-variant-numeric:tabular-nums}
+  #tip{position:absolute;pointer-events:none;background:#1A1F1C;color:#fff;font-size:12.5px;line-height:1.6;padding:8px 10px;border-radius:8px;white-space:nowrap;opacity:0;transition:opacity .1s;z-index:5}
+  #tip b{font-weight:600}
+  #msg{position:absolute;inset:0;display:none;align-items:center;justify-content:center;text-align:center;color:var(--muted);font-size:13.5px;line-height:1.8;padding:20px}
+  @media (prefers-reduced-motion: reduce){ .grow{animation:none!important} }
+  @keyframes grow{from{transform:scaleY(0)}to{transform:scaleY(1)}}
+  .grow{transform-box:fill-box;transform-origin:bottom;animation:grow .55s cubic-bezier(.2,.7,.2,1) both}
+</style>
+</head>
+<body>
+<div id="root">
+  <div id="legend"></div>
+  <div id="chart"><div id="tip"></div><div id="msg"></div></div>
+</div>
+
+<script>
+/* ============================ الإعدادات ============================ */
+var CONFIG = {
+  colors: ['#1F5B3A', '#D9C49A', '#2F8055', '#B8955A', '#7FB094', '#9AA39E'], // ألوان السلاسل بالترتيب
+  divisor: 1e6,             // قسمة القيم (1e6 = مليون). ضع 1 لعرض القيمة كما هي
+  decimals: 0,              // عدد المنازل العشرية في التسميات
+  unitLabel: 'مليون ر.س',   // تظهر في التلميح (Tooltip)
+  sort: 'desc',             // 'desc' | 'asc' | 'none' — حسب السلسلة الأولى
+  maxCategories: 12,        // الفئات الزائدة تُدمج في «أخرى» (0 = بدون دمج)
+  otherLabel: 'أخرى',
+  showValues: true,         // أرقام فوق الأعمدة
+  showGrid: false,          // خطوط شبكة أفقية ومحور قيم
+  barMaxWidth: 52,          // أقصى عرض للعمود بالبكسل
+  locale: 'en-US'           // أرقام لاتينية كما في اللوحة
+};
+
+/* ============================ الحالة ============================ */
+var state = { resultName: null, model: null, hidden: {}, selected: {} };
+var chartEl = document.getElementById('chart');
+var legendEl = document.getElementById('legend');
+var tipEl = document.getElementById('tip');
+var msgEl = document.getElementById('msg');
+var SVGNS = 'http://www.w3.org/2000/svg';
+
+/* ======================= الاتصال مع SAS VA ======================= */
+var inVA = window.parent && window.parent !== window;
+
+var DEBUG = /[?&]debug=1/.test(location.search);
+var gotData = false;
+
+window.addEventListener('message', function (e) {
+  var d = e.data;
+  if (typeof d === 'string') { try { d = JSON.parse(d); } catch (x) { return; } }
+  if (!d || typeof d !== 'object' || !d.hasOwnProperty('data')) return; // نفس شرط مكتبة SAS
+  gotData = true;
+  if (DEBUG) showDebug(d);
+  if (!Array.isArray(d.columns)) d.columns = [];
+  if (!Array.isArray(d.data)) d.data = [];
+  state.resultName = d.resultName;
+  state.selected = {};
+  var model = buildModel(d);
+  if (model.error) { state.model = null; showMessage(model.error); postInstruction(model.error); return; }
+  state.model = model;
+  hideMessage();
+  render(true);
+});
+
+function toParent(msg) {
+  var target = '*';
+  try { if (document.referrer) target = new URL(document.referrer).origin; } catch (x) {}
+  window.parent.postMessage(msg, target);
+}
+function postSelection(rowIdx) {
+  if (!inVA || !state.resultName) return;
+  toParent({ resultName: state.resultName, selections: rowIdx.map(function (r) { return { row: r }; }) });
+}
+function postInstruction(text) {
+  if (!inVA || !state.resultName) return;
+  toParent({ resultName: state.resultName, message: text });
+}
+function showDebug(d) {
+  var box = document.getElementById('dbg');
+  if (!box) { box = document.createElement('pre'); box.id = 'dbg'; box.style.cssText = 'position:absolute;left:4px;bottom:4px;max-width:60%;max-height:45%;overflow:auto;margin:0;padding:6px 8px;background:#FFF8E6;border:1px solid #E5D3A8;border-radius:6px;font:11px/1.5 monospace;direction:ltr;text-align:left;z-index:9'; document.body.appendChild(box); }
+  box.textContent = 'resultName: ' + d.resultName + '\nrows: ' + (d.data ? d.data.length : 0) +
+    '\ncolumns:\n' + (d.columns || []).map(function (c, i) { return '  ' + i + ': ' + (c.label || c.name) + ' [' + c.type + ']'; }).join('\n') +
+    '\nfirst row: ' + JSON.stringify((d.data || [])[0]);
+}
+
+// حالة الانتظار: داخل VA ولم تصل بيانات بعد
+if (inVA) {
+  showMessage('في انتظار البيانات من SAS VA…\nتأكد من إسناد المتغيرات في Roles → Variables');
+}
+
+/* ========================= بناء نموذج البيانات ========================= */
+var NUM_TYPES = { number: 1, double: 1, numeric: 1, integer: 1, int: 1, decimal: 1, currency: 1 };
+var currentRows = [];
+function isNum(c) {
+  if (c.type) return !!NUM_TYPES[String(c.type).toLowerCase()];
+  // بدون نوع: استنتج من القيم
+  var i = c.__i, seen = 0;
+  for (var r = 0; r < currentRows.length && seen < 20; r++) {
+    var v = currentRows[r][i]; if (v === null || v === undefined || v === '') continue;
+    seen++; if (typeof v !== 'number') return false;
+  }
+  return seen > 0;
+}
+
+function buildModel(d) {
+  var cols = d.columns, rows = d.data;
+  currentRows = rows; cols.forEach(function (c, i) { c.__i = i; });
+  // صفوف على شكل كائنات بدل مصفوفات
+  if (rows.length && !Array.isArray(rows[0]) && typeof rows[0] === 'object') {
+    rows = rows.map(function (o) { return cols.map(function (c) { return o[c.name]; }); });
+    currentRows = rows;
+  }
+  var need = 'أسند المتغيرات بهذا الترتيب:\n[فئة] ثم مقياس واحد أو أكثر\nأو: [فئة] ، [مجموعة] ، [مقياس]';
+  if (cols.length < 2 || isNum(cols[0])) return { error: need };
+  if (!rows.length) return { error: 'لا توجد بيانات للمرشحات الحالية' };
+
+  var cats = [], catIndex = {}, series = [], values = {}, rowMap = {};
+  function cat(k) {
+    k = (k === null || k === undefined || k === '') ? '(فارغ)' : String(k);
+    if (!(k in catIndex)) { catIndex[k] = cats.length; cats.push(k); values[k] = {}; rowMap[k] = []; }
+    return k;
+  }
+
+  if (cols.length >= 3 && !isNum(cols[1]) && isNum(cols[2])) {
+    // الشكل الطويل: فئة، مجموعة، مقياس
+    var sIndex = {};
+    rows.forEach(function (r, i) {
+      var k = cat(r[0]);
+      var s = (r[1] === null || r[1] === '') ? '(فارغ)' : String(r[1]);
+      if (!(s in sIndex)) { sIndex[s] = series.length; series.push({ key: s, label: s }); }
+      values[k][s] = (values[k][s] || 0) + (Number(r[2]) || 0);
+      rowMap[k].push(i);
+    });
+  } else {
+    // الشكل العريض: فئة، مقياس1، مقياس2، ...
+    for (var c = 1; c < cols.length; c++) {
+      if (isNum(cols[c])) series.push({ key: 'c' + c, label: cols[c].label || cols[c].name, col: c });
+    }
+    if (!series.length) return { error: need };
+    rows.forEach(function (r, i) {
+      var k = cat(r[0]);
+      series.forEach(function (s) { values[k][s.key] = (values[k][s.key] || 0) + (Number(r[s.col]) || 0); });
+      rowMap[k].push(i);
+    });
+  }
+
+  series.forEach(function (s, i) { s.color = CONFIG.colors[i % CONFIG.colors.length]; });
+
+  var list = cats.map(function (k) { return { label: k, v: values[k], rows: rowMap[k] }; });
+  var first = series[0].key;
+  if (CONFIG.sort !== 'none') {
+    var dir = CONFIG.sort === 'asc' ? 1 : -1;
+    list.sort(function (a, b) { return dir * ((a.v[first] || 0) - (b.v[first] || 0)); });
+  }
+  if (CONFIG.maxCategories && list.length > CONFIG.maxCategories) {
+    var keep = list.slice(0, CONFIG.maxCategories - 1), rest = list.slice(CONFIG.maxCategories - 1);
+    var other = { label: CONFIG.otherLabel, v: {}, rows: [] };
+    rest.forEach(function (x) {
+      series.forEach(function (s) { other.v[s.key] = (other.v[s.key] || 0) + (x.v[s.key] || 0); });
+      other.rows = other.rows.concat(x.rows);
+    });
+    list = keep.concat([other]);
+  }
+  return { series: series, cats: list, colLabel: cols[0].label || cols[0].name };
+}
+
+/* ============================ الرسم ============================ */
+function fmt(v) {
+  return (v / CONFIG.divisor).toLocaleString(CONFIG.locale, {
+    minimumFractionDigits: CONFIG.decimals, maximumFractionDigits: CONFIG.decimals
+  });
+}
+function el(name, attrs, parent) {
+  var n = document.createElementNS(SVGNS, name);
+  for (var k in attrs) n.setAttribute(k, attrs[k]);
+  if (parent) parent.appendChild(n);
+  return n;
+}
+function niceMax(v) {
+  if (v <= 0) return 1;
+  var p = Math.pow(10, Math.floor(Math.log10(v))), n = v / p;
+  return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 2.5 ? 2.5 : n <= 5 ? 5 : 10) * p;
+}
+
+function renderLegend(m) {
+  legendEl.innerHTML = '';
+  m.series.forEach(function (s) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'lg' + (state.hidden[s.key] ? ' off' : '');
+    b.setAttribute('aria-pressed', state.hidden[s.key] ? 'false' : 'true');
+    b.innerHTML = '<i style="background:' + s.color + '"></i><span></span>';
+    b.lastChild.textContent = s.label;
+    b.onclick = function () {
+      var visible = m.series.filter(function (x) { return !state.hidden[x.key]; }).length;
+      if (!state.hidden[s.key] && visible === 1) return; // اترك سلسلة واحدة على الأقل
+      state.hidden[s.key] = !state.hidden[s.key];
+      render(false);
+    };
+    legendEl.appendChild(b);
+  });
+}
+
+function render(animate) {
+  var m = state.model;
+  var old = chartEl.querySelector('svg'); if (old) old.remove();
+  if (!m) return;
+  renderLegend(m);
+
+  var W = chartEl.clientWidth, H = chartEl.clientHeight;
+  if (W < 50 || H < 50) return;
+  var vis = m.series.filter(function (s) { return !state.hidden[s.key]; });
+
+  var max = 0;
+  m.cats.forEach(function (c) { vis.forEach(function (s) { max = Math.max(max, c.v[s.key] || 0); }); });
+  var top = CONFIG.showGrid ? niceMax(max) : max * 1.0 || 1;
+
+  var padL = CONFIG.showGrid ? 44 : 6, padR = 6, padT = CONFIG.showValues ? 24 : 8, padB = 40;
+  var pw = W - padL - padR, ph = H - padT - padB;
+
+  var svg = el('svg', { viewBox: '0 0 ' + W + ' ' + H, role: 'img', 'aria-label': m.colLabel }, null);
+  svg.style.direction = 'ltr';
+  var g = el('g', {}, svg);
+  if (Object.keys(state.selected).length) g.setAttribute('class', 'dim');
+
+  if (CONFIG.showGrid) {
+    for (var t = 0; t <= 4; t++) {
+      var y = padT + ph - ph * t / 4;
+      el('line', { x1: padL, x2: W - padR, y1: y, y2: y, stroke: t ? 'var(--grid)' : 'none' }, g);
+      var tx = el('text', { x: padL - 8, y: y + 4, 'text-anchor': 'end', class: 'tick' }, g);
+      tx.textContent = fmt(top * t / 4);
+    }
+  }
+  el('line', { x1: padL, x2: W - padR, y1: padT + ph, y2: padT + ph, stroke: 'var(--axis)' }, g);
+
+  var n = m.cats.length, slot = pw / n;
+  var gap = 4, groupW = Math.min(slot * 0.62, vis.length * CONFIG.barMaxWidth + (vis.length - 1) * gap);
+  var bw = Math.max(4, (groupW - (vis.length - 1) * gap) / vis.length);
+
+  // RTL: الفئة الأولى (الأكبر) على اليمين، والسلسلة الأولى أقرب لليمين
+  m.cats.forEach(function (c, ci) {
+    var cx = padL + pw - slot * (ci + 0.5);
+    var gx = cx + groupW / 2;
+    var selected = !!state.selected[c.label];
+
+    vis.forEach(function (s, si) {
+      var v = c.v[s.key] || 0;
+      var h = Math.max(v > 0 ? 1 : 0, ph * v / top);
+      var x = gx - (si + 1) * bw - si * gap;
+      var y = padT + ph - h;
+      var r = Math.min(5, bw / 4, h);
+      var path = 'M' + x + ',' + (y + h) + 'V' + (y + r) + 'Q' + x + ',' + y + ' ' + (x + r) + ',' + y +
+                 'H' + (x + bw - r) + 'Q' + (x + bw) + ',' + y + ' ' + (x + bw) + ',' + (y + r) + 'V' + (y + h) + 'Z';
+      var bar = el('path', { d: path, fill: s.color, class: 'bar' + (selected ? ' sel' : '') + (animate ? ' grow' : '') }, g);
+      if (animate) bar.style.animationDelay = (ci * 40) + 'ms';
+      bar.addEventListener('mousemove', function (ev) { showTip(ev, c, s, v); });
+      bar.addEventListener('mouseleave', hideTip);
+      bar.addEventListener('click', function (ev) { ev.stopPropagation(); select(c, ev.ctrlKey || ev.metaKey || ev.shiftKey); });
+
+      if (CONFIG.showValues && bw >= 14) {
+        var lt = el('text', { x: x + bw / 2, y: y - 7, 'text-anchor': 'middle', class: 'val' }, g);
+        lt.textContent = fmt(v);
+      }
+    });
+
+    var label = el('text', { x: cx, y: padT + ph + 26, 'text-anchor': 'middle', class: 'cat' }, g);
+    label.textContent = c.label;
+    var tl = el('title', {}, label); tl.textContent = c.label;
+    // اختصار التسمية إذا تجاوزت عرض الخانة
+    var maxW = slot - 6;
+    if (label.getComputedTextLength && label.getComputedTextLength() > maxW) {
+      var txt = c.label;
+      while (txt.length > 2 && label.getComputedTextLength() > maxW) { txt = txt.slice(0, -1); label.firstChild.nodeValue = txt + '…'; }
+    }
+  });
+
+  svg.addEventListener('click', function () { if (Object.keys(state.selected).length) { state.selected = {}; postSelection([]); render(false); } });
+  chartEl.insertBefore(svg, tipEl);
+  // إعادة قياس النصوص بعد الإضافة للصفحة
+  if (!svg.__measured) { svg.__measured = true; fitLabels(svg, slot); }
+}
+
+function fitLabels(svg, slot) {
+  svg.querySelectorAll('text.cat').forEach(function (t) {
+    var full = t.querySelector('title') ? t.querySelector('title').textContent : t.textContent;
+    var node = t.firstChild, txt = full, maxW = slot - 6;
+    while (txt.length > 2 && t.getComputedTextLength() > maxW) { txt = txt.slice(0, -1); node.nodeValue = txt + '…'; }
+  });
+}
+
+/* ============================ التفاعل ============================ */
+function select(c, additive) {
+  if (additive) {
+    if (state.selected[c.label]) delete state.selected[c.label]; else state.selected[c.label] = true;
+  } else {
+    var only = state.selected[c.label] && Object.keys(state.selected).length === 1;
+    state.selected = {};
+    if (!only) state.selected[c.label] = true;
+  }
+  var rows = [];
+  state.model.cats.forEach(function (x) { if (state.selected[x.label]) rows = rows.concat(x.rows); });
+  postSelection(rows);
+  render(false);
+}
+
+function showTip(ev, c, s, v) {
+  var vis = state.model.series.filter(function (x) { return !state.hidden[x.key]; });
+  var html = '<b></b><br>';
+  tipEl.innerHTML = html;
+  tipEl.firstChild.textContent = c.label;
+  vis.forEach(function (x) {
+    var line = document.createElement('div');
+    line.innerHTML = '<span style="display:inline-block;width:9px;height:9px;border-radius:2px;margin-left:6px;background:' + x.color + '"></span>';
+    line.appendChild(document.createTextNode(x.label + ': ' + fmt(c.v[x.key] || 0) + ' ' + CONFIG.unitLabel));
+    if (x.key === s.key) line.style.fontWeight = '600';
+    tipEl.appendChild(line);
+  });
+  var r = chartEl.getBoundingClientRect();
+  var x = ev.clientX - r.left, y = ev.clientY - r.top;
+  tipEl.style.opacity = 1;
+  var tw = tipEl.offsetWidth, th = tipEl.offsetHeight;
+  tipEl.style.left = Math.min(Math.max(4, x - tw / 2), r.width - tw - 4) + 'px';
+  tipEl.style.top = Math.max(4, y - th - 12) + 'px';
+}
+function hideTip() { tipEl.style.opacity = 0; }
+
+function showMessage(t) { msgEl.style.display = 'flex'; msgEl.style.whiteSpace = 'pre-line'; msgEl.textContent = t; legendEl.innerHTML = ''; var s = chartEl.querySelector('svg'); if (s) s.remove(); }
+function hideMessage() { msgEl.style.display = 'none'; }
+
+/* ====================== إعادة الرسم عند تغيير الحجم ====================== */
+var rt;
+new ResizeObserver(function () { clearTimeout(rt); rt = setTimeout(function () { render(false); }, 80); }).observe(chartEl);
+
+/* ============ معاينة خارج VA (عند فتح الملف مباشرة في المتصفح) ============ */
+if (!inVA) {
+  var badge = document.createElement('div');
+  badge.textContent = 'معاينة ببيانات تجريبية — داخل SAS VA تُستبدل ببيانات التقرير';
+  badge.style.cssText = 'position:absolute;top:8px;left:12px;font-size:11.5px;color:#7A5A22;background:#F4ECDD;border-radius:999px;padding:3px 10px;z-index:4';
+  document.body.appendChild(badge);
+  window.postMessage({
+    resultName: 'preview',
+    columns: [
+      { name: 'op_type', label: 'نوع العملية', type: 'string' },
+      { name: 'main_amt', label: 'الاشتباه الرئيسي', type: 'number' },
+      { name: 'study_amt', label: 'الدراسة المالية', type: 'number' }
+    ],
+    data: [
+      ['شيكات', 140e6, 60e6], ['تحويل دولي', 820e6, 410e6], ['سحوبات', 260e6, 120e6],
+      ['إيداع نقدي', 540e6, 260e6], ['تحويل محلي', 390e6, 180e6]
+    ]
+  }, '*');
+}
+</script>
+</body>
+</html>
