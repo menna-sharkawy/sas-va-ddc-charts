@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Channels by nationality – SAS VA DDC</title>
+<!--
+  SAS Visual Analytics – Data-Driven Content (DDC)
+  قنوات العمليات لأكبر الجنسيات — أعمدة مكدسة 100% (أو بالأعداد)
+  Transaction channels by nationality — 100% stacked bars (or counts)
+
+  Roles → Variables (بالترتيب / in this order):
+    1) الفئة / Category      : الجنسية            (nationality)
+    2) المجموعة / Group      : transmode_code     (channel)
+    3) المقياس / Measure     : عدد العمليات (Distinct count of رقم العملية)
+
+  URL options (اختياري / optional):
+    ?top=4                    عدد الجنسيات / number of nationalities (0 = all)
+    &exclude=المملكة العربية السعودية   قيم تُستبعد (مفصولة بفاصلة) / values to exclude (comma separated)
+    &channels=5               عدد القنوات قبل «أخرى» / channels shown before "Other"
+    &mode=pct | count         نسب أو أعداد / percent or counts
+    &lang=ar | en             اللغة (الافتراضي: لغة المتصفح) / UI language (default: browser)
+    &title=...                عنوان اختياري / optional title
+  Font: Almarai (Google Fonts or a fonts/ folder next to this file).
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Almarai:wght@400;700;800&display=swap" rel="stylesheet">
+<style>
+  @font-face{font-family:'Almarai Local';font-weight:400;src:url('fonts/Almarai-Regular.ttf') format('truetype')}
+  @font-face{font-family:'Almarai Local';font-weight:700;src:url('fonts/Almarai-Bold.ttf') format('truetype')}
+  :root{ --ink:#1A1F1C; --ink-2:#4A524D; --muted:#6B736E; --line:#E6E9E6;
+         --font:'Almarai','Almarai Local','IBM Plex Sans Arabic','Segoe UI',Tahoma,Arial,sans-serif; }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:#FFFFFF;color:var(--ink);font-family:var(--font);overflow:hidden}
+  #wrap{position:absolute;inset:0;display:flex;flex-direction:column;gap:12px;padding:clamp(10px,2.5vh,18px) clamp(12px,2.5vw,20px)}
+  #title{margin:0;font-size:clamp(14px,2.4vh,17px);font-weight:700;color:var(--ink)}
+  #legend{display:flex;flex-wrap:wrap;gap:6px 16px;font-size:12.5px;color:var(--ink-2)}
+  .lg{display:inline-flex;align-items:center;gap:6px;background:none;border:0;padding:3px 0;font:inherit;color:inherit;cursor:pointer}
+  .lg i{width:11px;height:11px;border-radius:3px;display:inline-block;flex-shrink:0}
+  .lg.dim{opacity:.35}
+  .lg:focus-visible{outline:2px solid #B8955A;outline-offset:2px;border-radius:4px}
+  #rows{flex:1;min-height:0;display:flex;flex-direction:column;justify-content:space-evenly;gap:8px;overflow:auto}
+  .row{display:grid;grid-template-columns:minmax(70px,var(--labW,130px)) 1fr auto;align-items:center;gap:12px}
+  .lab{font-size:13.5px;color:var(--ink);font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;background:none;border:0;padding:0;font-family:inherit;text-align:start}
+  .bar{display:flex;gap:2px;height:clamp(16px,calc((100vh - 120px) / var(--n,4) * .42),34px);border-radius:6px;overflow:hidden;background:#F1F3F1}
+  .seg{height:100%;min-width:3px;position:relative;cursor:pointer;transition:opacity .15s;display:flex;align-items:center;justify-content:center;overflow:hidden}
+  .seg span{font-size:11.5px;font-weight:700;color:#fff;white-space:nowrap;pointer-events:none;font-variant-numeric:tabular-nums}
+  .seg.light span{color:#3E3320}
+  .tot{font-size:12.5px;color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap;min-width:36px;text-align:end}
+  .dimmed .seg{opacity:.25} .dimmed .seg.on{opacity:1}
+  .dimmed .row.on .seg:not(.off){opacity:1}
+  #tip{position:fixed;pointer-events:none;background:#1A1F1C;color:#fff;font-size:12.5px;line-height:1.7;padding:8px 11px;border-radius:8px;opacity:0;transition:opacity .1s;z-index:9;max-width:260px}
+  #tip b{font-weight:700}
+  #msg{position:absolute;inset:0;display:none;align-items:center;justify-content:center;text-align:center;color:var(--muted);font-size:13.5px;line-height:1.8;padding:20px;white-space:pre-line;background:#fff}
+  @keyframes grow{from{transform:scaleX(0)}to{transform:scaleX(1)}}
+  .anim .bar{transform-origin:var(--origin,right);animation:grow .55s cubic-bezier(.2,.7,.2,1) both}
+  @media (prefers-reduced-motion: reduce){ .anim .bar{animation:none} }
+  /* شاشات ضيقة: التسمية فوق الشريط / narrow: label above bar */
+  @media (max-width:440px){
+    .row{grid-template-columns:1fr auto;row-gap:4px}
+    .lab{grid-column:1 / -1}
+    #legend{font-size:11.5px;gap:4px 12px}
+  }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <h1 id="title" hidden></h1>
+  <div id="legend" role="group"></div>
+  <div id="rows" role="list"></div>
+</div>
+<div id="tip" role="tooltip"></div>
+<div id="msg"></div>
+
+<script>
+/* ============================ الإعدادات / Settings ============================ */
+var qs = new URLSearchParams(location.search);
+var CONFIG = {
+  top: qs.has('top') ? Math.max(0, Number(qs.get('top')) || 0) : 4,
+  exclude: (qs.get('exclude') !== null ? qs.get('exclude') : 'المملكة العربية السعودية').split(',').map(function (s) { return s.trim(); }).filter(Boolean),
+  maxChannels: Math.max(1, Number(qs.get('channels')) || 5),
+  mode: qs.get('mode') === 'count' ? 'count' : 'pct',
+  colors: ['#1F5B3A', '#B8955A', '#7FB094', '#D9C49A', '#2F8055', '#9AA39E', '#5E7F6B', '#C9B48A'],
+  otherColor: '#B4BAB6',
+  minLabelPct: 9     // أقل نسبة لإظهار الرقم داخل الجزء / min share to print a value inside a segment
+};
+// اللغة: من الرابط أو من المتصفح / language: URL or browser
+var LANG = (qs.get('lang') || (navigator.languages && navigator.languages[0]) || navigator.language || 'ar').toLowerCase().indexOf('ar') === 0 ? 'ar' : 'en';
+var T = {
+  ar: { other: 'أخرى', total: 'الإجمالي', share: 'النسبة', of: 'من', wait: 'في انتظار البيانات من SAS VA…',
+        roles: 'أسند في Roles → Variables:\n1) الجنسية\n2) قناة العملية (transmode_code)\n3) مقياس (مثل عدد العمليات)',
+        empty: 'لا توجد بيانات للمرشحات الحالية', title: 'قنوات العمليات لأكبر الجنسيات', showAll: 'إظهار الكل' },
+  en: { other: 'Other', total: 'Total', share: 'Share', of: 'of', wait: 'Waiting for data from SAS VA…',
+        roles: 'Assign in Roles → Variables:\n1) Nationality\n2) Channel (transmode_code)\n3) A measure (e.g. transaction count)',
+        empty: 'No data for the current filters', title: 'Transaction channels by nationality', showAll: 'Show all' }
+}[LANG];
+document.documentElement.lang = LANG;
+document.documentElement.dir = LANG === 'ar' ? 'rtl' : 'ltr';
+document.documentElement.style.setProperty('--origin', LANG === 'ar' ? 'right' : 'left');
+var NUMLOC = 'en-US';
+if (qs.get('title') !== null) { var tEl = document.getElementById('title'); tEl.textContent = qs.get('title') || T.title; tEl.hidden = false; }
+
+var DEBUG = qs.get('debug') === '1';
+var inVA = window.parent && window.parent !== window;
+var state = { resultName: null, model: null, hidden: {}, sel: null };
+var $ = function (id) { return document.getElementById(id); };
+
+/* ======================= الاتصال مع SAS VA / VA messaging ======================= */
+window.addEventListener('message', function (e) {
+  var d = e.data;
+  if (typeof d === 'string') { try { d = JSON.parse(d); } catch (x) { return; } }
+  if (!d || typeof d !== 'object' || !d.hasOwnProperty('data')) return;
+  if (DEBUG) console.log('DDC payload', d);
+  state.resultName = d.resultName; state.sel = null;
+  var m = build(Array.isArray(d.columns) ? d.columns : [], Array.isArray(d.data) ? d.data : []);
+  if (m.error) { state.model = null; msg(m.error); post({ resultName: state.resultName, message: m.error }); return; }
+  state.model = m; $('msg').style.display = 'none'; render(true);
+});
+function post(m) {
+  if (!inVA || !state.resultName) return;
+  var t = '*'; try { if (document.referrer) t = new URL(document.referrer).origin; } catch (x) {}
+  window.parent.postMessage(m, t);
+}
+
+/* ========================= نموذج البيانات / Data model ========================= */
+var NUM = { number:1, double:1, numeric:1, integer:1, int:1, decimal:1, currency:1 };
+function isNum(c, rows, i) {
+  if (c.type) return !!NUM[String(c.type).toLowerCase()];
+  for (var r = 0; r < rows.length; r++) { var v = rows[r][i]; if (v !== null && v !== undefined && v !== '') return typeof v === 'number'; }
+  return false;
+}
+function key(v) { return (v === null || v === undefined || String(v).trim() === '') ? (LANG === 'ar' ? '(غير محدد)' : '(Not set)') : String(v).trim(); }
+
+function build(cols, rows) {
+  if (rows.length && !Array.isArray(rows[0])) rows = rows.map(function (o) { return cols.map(function (c) { return o[c.name]; }); });
+  var cats = [], val = -1;
+  cols.forEach(function (c, i) { if (isNum(c, rows, i)) { if (val < 0) val = i; } else cats.push(i); });
+  if (cats.length < 2 || val < 0) return { error: T.roles };
+  var natCol = cats[0], chCol = cats[1];
+
+  var nats = {}, chTotals = {};
+  rows.forEach(function (r, ri) {
+    var n = key(r[natCol]); if (CONFIG.exclude.indexOf(n) >= 0) return;
+    var c = key(r[chCol]), v = Number(r[val]); if (!isFinite(v) || v <= 0) return;
+    if (!nats[n]) nats[n] = { label: n, total: 0, by: {}, rows: {} };
+    nats[n].total += v; nats[n].by[c] = (nats[n].by[c] || 0) + v;
+    (nats[n].rows[c] = nats[n].rows[c] || []).push(ri);
+    chTotals[c] = (chTotals[c] || 0) + v;
+  });
+  var list = Object.keys(nats).map(function (k) { return nats[k]; }).sort(function (a, b) { return b.total - a.total; });
+  if (!list.length) return { error: T.empty };
+  if (CONFIG.top) list = list.slice(0, CONFIG.top);
+
+  // القنوات: الأكبر ضمن الجنسيات المعروضة، والباقي «أخرى» / channels: top within shown nationalities
+  var shown = {};
+  list.forEach(function (n) { for (var c in n.by) shown[c] = (shown[c] || 0) + n.by[c]; });
+  var chs = Object.keys(shown).sort(function (a, b) { return shown[b] - shown[a]; });
+  var keep = chs.slice(0, chs.length > CONFIG.maxChannels ? CONFIG.maxChannels - 1 : chs.length);
+  var channels = keep.map(function (c, i) { return { key: c, label: c, color: CONFIG.colors[i % CONFIG.colors.length] }; });
+  var hasOther = chs.length > keep.length;
+  if (hasOther) channels.push({ key: '__other', label: T.other, color: CONFIG.otherColor });
+
+  list.forEach(function (n) {
+    n.segs = channels.map(function (ch) {
+      var v = 0, rws = [];
+      if (ch.key === '__other') { for (var c in n.by) if (keep.indexOf(c) < 0) { v += n.by[c]; rws = rws.concat(n.rows[c]); } }
+      else { v = n.by[ch.key] || 0; rws = n.rows[ch.key] || []; }
+      return { ch: ch, v: v, rows: rws };
+    });
+  });
+  return { list: list, channels: channels };
+}
+
+/* ============================ العرض / Render ============================ */
+function fmt(v) { return Math.round(v).toLocaleString(NUMLOC); }
+function pct(v, t) { var p = t ? v / t * 100 : 0; return (p >= 10 || p === 0 ? Math.round(p) : Math.round(p * 10) / 10).toLocaleString(NUMLOC) + '%'; }
+function isLight(hex) { var h = hex.replace('#', ''); var r = parseInt(h.substr(0, 2), 16), g = parseInt(h.substr(2, 2), 16), b = parseInt(h.substr(4, 2), 16); return (r * 299 + g * 587 + b * 114) / 1000 > 170; }
+
+function render(animate) {
+  var m = state.model; if (!m) return;
+  // المفتاح / legend
+  var lg = $('legend'); lg.innerHTML = '';
+  m.channels.forEach(function (ch) {
+    var b = document.createElement('button'); b.type = 'button';
+    b.className = 'lg' + (state.hidden[ch.key] ? ' dim' : '');
+    b.setAttribute('aria-pressed', state.hidden[ch.key] ? 'false' : 'true');
+    b.innerHTML = '<i></i><span></span>';
+    b.querySelector('i').style.background = ch.color; b.querySelector('span').textContent = ch.label;
+    b.onclick = function () {
+      var vis = m.channels.filter(function (x) { return !state.hidden[x.key]; }).length;
+      if (!state.hidden[ch.key] && vis === 1) return;
+      state.hidden[ch.key] = !state.hidden[ch.key]; render(false);
+    };
+    lg.appendChild(b);
+  });
+
+  // عرض عمود التسميات / label column width
+  var probe = document.createElement('span'); probe.className = 'lab'; probe.style.cssText = 'position:absolute;visibility:hidden';
+  document.body.appendChild(probe); var lw = 0;
+  m.list.forEach(function (n) { probe.textContent = n.label; lw = Math.max(lw, probe.offsetWidth); }); probe.remove();
+  document.documentElement.style.setProperty('--labW', Math.min(lw + 6, Math.max(90, window.innerWidth * 0.28)) + 'px');
+  document.documentElement.style.setProperty('--n', m.list.length);
+
+  var rowsEl = $('rows'); rowsEl.innerHTML = '';
+  rowsEl.className = (animate ? 'anim' : '') + (state.sel ? ' dimmed' : '');
+  var maxTotal = Math.max.apply(null, m.list.map(function (n) { return visTotal(n); }));
+
+  m.list.forEach(function (n, ni) {
+    var row = document.createElement('div'); row.className = 'row'; row.setAttribute('role', 'listitem');
+    var lab = document.createElement('button'); lab.type = 'button'; lab.className = 'lab'; lab.textContent = n.label; lab.title = n.label;
+    lab.onclick = function (ev) { ev.stopPropagation(); select({ nat: n.label }, n.segs.reduce(function (a, s) { return a.concat(s.rows); }, [])); };
+    var bar = document.createElement('div'); bar.className = 'bar';
+    if (animate) bar.style.animationDelay = (ni * 70) + 'ms';
+    var vt = visTotal(n);
+    // في وضع الأعداد: طول الشريط نسبةً لأكبر جنسية / count mode: bar length relative to the largest
+    if (CONFIG.mode === 'count') { bar.style.width = (vt / maxTotal * 100) + '%'; bar.style.background = 'transparent'; }
+    if (state.sel && state.sel.nat === n.label) row.classList.add('on');
+
+    n.segs.forEach(function (s) {
+      if (s.v <= 0 || state.hidden[s.ch.key]) return;
+      var seg = document.createElement('div');
+      var share = s.v / vt * 100;
+      seg.className = 'seg' + (isLight(s.ch.color) ? ' light' : '');
+      if (state.sel && ((state.sel.nat === n.label && !state.sel.ch) || (state.sel.nat === n.label && state.sel.ch === s.ch.key))) seg.classList.add('on');
+      seg.style.flex = s.v + ' 1 0'; seg.style.background = s.ch.color;
+      if (share >= CONFIG.minLabelPct) { var sp = document.createElement('span'); sp.textContent = CONFIG.mode === 'pct' ? pct(s.v, vt) : fmt(s.v); seg.appendChild(sp); }
+      seg.addEventListener('mousemove', function (ev) { tip(ev, n, s, vt); });
+      seg.addEventListener('mouseleave', function () { $('tip').style.opacity = 0; });
+      seg.onclick = function (ev) { ev.stopPropagation(); select({ nat: n.label, ch: s.ch.key }, s.rows); };
+      bar.appendChild(seg);
+    });
+    var tot = document.createElement('span'); tot.className = 'tot'; tot.textContent = fmt(vt);
+    var barWrap = document.createElement('div'); barWrap.appendChild(bar);
+    row.append(lab, barWrap, tot); rowsEl.appendChild(row);
+  });
+}
+function visTotal(n) { return n.segs.reduce(function (a, s) { return a + (state.hidden[s.ch.key] ? 0 : s.v); }, 0) || 1; }
+
+function tip(ev, n, s, vt) {
+  var t = $('tip'); t.innerHTML = '';
+  var h = document.createElement('b'); h.textContent = n.label; t.appendChild(h);
+  var l1 = document.createElement('div'); l1.textContent = s.ch.label + ': ' + fmt(s.v); t.appendChild(l1);
+  var l2 = document.createElement('div'); l2.textContent = T.share + ': ' + pct(s.v, vt) + ' ' + T.of + ' ' + fmt(vt); t.appendChild(l2);
+  t.style.opacity = 1;
+  var x = ev.clientX, y = ev.clientY, w = t.offsetWidth, hh = t.offsetHeight;
+  t.style.left = Math.min(Math.max(6, x - w / 2), window.innerWidth - w - 6) + 'px';
+  t.style.top = (y - hh - 12 < 6 ? y + 16 : y - hh - 12) + 'px';
+}
+
+/* ============================ التفاعل / Interaction ============================ */
+function select(sel, rows) {
+  var same = state.sel && state.sel.nat === sel.nat && state.sel.ch === sel.ch;
+  state.sel = same ? null : sel;
+  post({ resultName: state.resultName, selections: (same ? [] : rows).map(function (r) { return { row: r }; }) });
+  render(false);
+}
+document.addEventListener('click', function () { if (state.sel) { state.sel = null; post({ resultName: state.resultName, selections: [] }); render(false); } });
+document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && state.sel) { state.sel = null; post({ resultName: state.resultName, selections: [] }); render(false); } });
+var rt; window.addEventListener('resize', function () { clearTimeout(rt); rt = setTimeout(function () { render(false); }, 100); });
+
+function msg(t) { $('msg').textContent = t; $('msg').style.display = 'flex'; }
+
+if (inVA) msg(T.wait);
+else {
+  // معاينة خارج VA / preview outside VA (your data, distinct transactions)
+  var demo = [['اليمن','عمليات الفرع',117],
+    ['مصر','عمليات الفرع',74],['مصر','جهاز إيداع نقدي',41],['مصر','حوالة سويفت',28],['مصر','الخدمات المصرفية عبر الإنترنت',28],
+    ['الأردن','عمليات الفرع',47],['الأردن','جهاز إيداع نقدي',30],['الأردن','حوالة سويفت',19],['الأردن','الخدمات المصرفية عبر الإنترنت',20],
+    ['الهند','عمليات الفرع',28],['الهند','جهاز إيداع نقدي',14],['الهند','حوالة سويفت',11],['الهند','الخدمات المصرفية عبر الإنترنت',11],['الهند','تحويل إلكتروني للأموال',4],['الهند','سحب من الصراف الآلي',2],
+    ['باكستان','عمليات الفرع',27],['باكستان','جهاز إيداع نقدي',12],['باكستان','حوالة سويفت',9],['باكستان','الخدمات المصرفية عبر الإنترنت',9],
+    ['المملكة العربية السعودية','عمليات الفرع',538]];
+  window.postMessage({ resultName: 'preview', columns: [{ name: 'n', label: 'الجنسية', type: 'string' }, { name: 'c', label: 'القناة', type: 'string' }, { name: 'v', label: 'عدد العمليات', type: 'number' }], data: demo }, '*');
+}
+</script>
+</body>
+</html>
