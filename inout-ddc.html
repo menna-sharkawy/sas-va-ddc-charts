@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Money in / out – SAS VA DDC</title>
+<!--
+  SAS Visual Analytics – Data-Driven Content (DDC)
+  الأموال الداخلة والخارجة — شريط واحد مقسوم (دائن / مدين)
+  Money in vs. money out — one split bar (credit / debit)
+
+  Roles → Variables (بالترتيب / in this order):
+    1) اتجاه العملية                         (category: دائن / مدين)
+    2) المبلغ  : Sum of اجمالي الحركات       (measure – amount)
+    3) اختياري: Distinct count of رقم العملية (measure – number of transactions, optional)
+
+  URL options (اختياري / optional):
+    ?in=دائن&out=مدين      قيمة الداخل والخارج في عمود الاتجاه / values used for in and out
+    &lang=ar | en          اللغة (الافتراضي: لغة المتصفح) / UI language (default: browser)
+    &title=...             عنوان اختياري / optional title
+    &unit=ر.س              وحدة المبلغ / amount unit
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Almarai:wght@400;700;800&display=swap" rel="stylesheet">
+<style>
+  @font-face{font-family:'Almarai Local';font-weight:400;src:url('fonts/Almarai-Regular.ttf') format('truetype')}
+  @font-face{font-family:'Almarai Local';font-weight:700;src:url('fonts/Almarai-Bold.ttf') format('truetype')}
+  @font-face{font-family:'Almarai Local';font-weight:800;src:url('fonts/Almarai-ExtraBold.ttf') format('truetype')}
+  :root{ --green:#1F5B3A; --gold:#B8955A; --grey:#9AA39E; --ink:#1A1F1C; --ink2:#4A524D; --muted:#6B736E;
+         --font:'Almarai','Almarai Local','IBM Plex Sans Arabic','Segoe UI',Tahoma,Arial,sans-serif; }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:#FFFFFF;color:var(--ink);font-family:var(--font);overflow:hidden}
+  #wrap{position:absolute;inset:0;display:flex;flex-direction:column;justify-content:center;gap:clamp(10px,3vh,18px);padding:clamp(10px,3vh,20px) clamp(12px,3vw,24px)}
+  #title{margin:0;font-size:clamp(14px,3.2vh,17px);font-weight:700}
+  #summary{margin:0;font-size:clamp(12.5px,2.8vh,14px);color:var(--ink2);line-height:1.6}
+  #summary b{color:var(--ink);font-weight:800}
+  #bar{display:flex;gap:3px;height:clamp(28px,16vh,52px);border-radius:8px;overflow:hidden;background:#F1F3F1}
+  .seg{display:flex;align-items:center;justify-content:center;gap:8px;color:#fff;font-weight:800;font-size:clamp(12px,3.4vh,16px);white-space:nowrap;overflow:hidden;cursor:pointer;transition:opacity .15s;min-width:4px;transform-origin:var(--origin,right)}
+  .seg small{font-weight:400;opacity:.9;font-size:.82em}
+  .dim .seg{opacity:.3} .dim .seg.on{opacity:1}
+  #cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+  .card{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border-radius:10px;background:#F6F8F6;cursor:pointer;border:1px solid transparent;font:inherit;color:inherit;text-align:start}
+  .card:focus-visible{outline:2px solid var(--gold);outline-offset:2px}
+  .card.on{border-color:var(--ink2)}
+  .card i{width:12px;height:12px;border-radius:3px;margin-top:5px;flex-shrink:0}
+  .card .k{font-size:12.5px;color:var(--ink2)}
+  .card .v{font-size:clamp(17px,4.2vh,22px);font-weight:800;line-height:1.3;font-variant-numeric:tabular-nums}
+  .card .v small{font-size:12px;font-weight:400;color:var(--muted);margin-inline-start:4px}
+  .card .n{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+  #tip{position:fixed;pointer-events:none;background:#1A1F1C;color:#fff;font-size:12.5px;line-height:1.7;padding:8px 11px;border-radius:8px;opacity:0;transition:opacity .1s;z-index:9}
+  #msg{position:absolute;inset:0;display:none;align-items:center;justify-content:center;text-align:center;color:var(--muted);font-size:13.5px;line-height:1.8;padding:20px;white-space:pre-line;background:#fff}
+  @keyframes grow{from{transform:scaleX(0)}to{transform:scaleX(1)}}
+  .anim .seg{animation:grow .6s cubic-bezier(.2,.7,.2,1) both}
+  @media (prefers-reduced-motion: reduce){ .anim .seg{animation:none} }
+  @media (max-height:150px){ #summary,#cards{display:none} }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <h1 id="title" hidden></h1>
+  <p id="summary"></p>
+  <div id="bar" role="img"></div>
+  <div id="cards"></div>
+</div>
+<div id="tip" role="tooltip"></div>
+<div id="msg"></div>
+
+<script>
+var qs = new URLSearchParams(location.search);
+var IN = qs.get('in') || 'دائن', OUT = qs.get('out') || 'مدين';
+var LANG = (qs.get('lang') || (navigator.languages && navigator.languages[0]) || navigator.language || 'ar').toLowerCase().indexOf('ar') === 0 ? 'ar' : 'en';
+var T = {
+  ar: { inn: 'داخلة', out: 'خارجة', other: 'أخرى', tx: 'عملية', unit: qs.get('unit') || 'ر.س', bn: 'مليار', mn: 'مليون', th: 'ألف',
+        more: function (r) { return r >= 1 ? 'الأموال الداخلة <b>' + r + ' ضعف</b> الخارجة' : 'الأموال الخارجة <b>' + (1 / r).toFixed(1) + ' ضعف</b> الداخلة'; },
+        title: 'الأموال الداخلة والخارجة', share: 'من الإجمالي',
+        wait: 'في انتظار البيانات من SAS VA…', roles: 'أسند في Roles → Variables:\n1) اتجاه العملية\n2) مجموع المبلغ\n3) عدد العمليات (اختياري)', empty: 'لا توجد بيانات للمرشحات الحالية' },
+  en: { inn: 'In', out: 'Out', other: 'Other', tx: 'transactions', unit: qs.get('unit') || 'SAR', bn: 'bn', mn: 'm', th: 'k',
+        more: function (r) { return r >= 1 ? 'Money in is <b>' + r + '×</b> money out' : 'Money out is <b>' + (1 / r).toFixed(1) + '×</b> money in'; },
+        title: 'Money in and out', share: 'of total',
+        wait: 'Waiting for data from SAS VA…', roles: 'Assign in Roles → Variables:\n1) Direction (credit/debit)\n2) Sum of amount\n3) Transaction count (optional)', empty: 'No data for the current filters' }
+}[LANG];
+document.documentElement.lang = LANG;
+document.documentElement.dir = LANG === 'ar' ? 'rtl' : 'ltr';
+document.documentElement.style.setProperty('--origin', LANG === 'ar' ? 'right' : 'left');
+if (qs.get('title') !== null) { var tt = document.getElementById('title'); tt.textContent = qs.get('title') || T.title; tt.hidden = false; }
+
+var inVA = window.parent && window.parent !== window;
+var state = { resultName: null, m: null, sel: null };
+var $ = function (id) { return document.getElementById(id); };
+
+window.addEventListener('message', function (e) {
+  var d = e.data;
+  if (typeof d === 'string') { try { d = JSON.parse(d); } catch (x) { return; } }
+  if (!d || typeof d !== 'object' || !d.hasOwnProperty('data')) return;
+  if (qs.get('debug') === '1') console.log('DDC payload', d);
+  state.resultName = d.resultName; state.sel = null;
+  var m = build(Array.isArray(d.columns) ? d.columns : [], Array.isArray(d.data) ? d.data : []);
+  if (m.error) { state.m = null; msg(m.error); post({ resultName: state.resultName, message: m.error }); return; }
+  state.m = m; $('msg').style.display = 'none'; render(true);
+});
+function post(o) {
+  if (!inVA || !state.resultName) return;
+  var t = '*'; try { if (document.referrer) t = new URL(document.referrer).origin; } catch (x) {}
+  window.parent.postMessage(o, t);
+}
+
+var NUM = { number:1, double:1, numeric:1, integer:1, int:1, decimal:1, currency:1 };
+function build(cols, rows) {
+  if (rows.length && !Array.isArray(rows[0])) rows = rows.map(function (o) { return cols.map(function (c) { return o[c.name]; }); });
+  var cat = -1, meas = [];
+  cols.forEach(function (c, i) { if (NUM[String(c.type || '').toLowerCase()]) meas.push(i); else if (cat < 0) cat = i; });
+  if (cat < 0 || !meas.length) return { error: T.roles };
+  var g = {};
+  rows.forEach(function (r, ri) {
+    var k = r[cat] === null || r[cat] === undefined ? '' : String(r[cat]).trim(); if (!k) return;
+    var key = k === IN ? 'in' : (k === OUT ? 'out' : 'other');
+    if (!g[key]) g[key] = { amt: 0, cnt: 0, rows: [], hasCnt: meas.length > 1 };
+    var a = Number(r[meas[0]]); if (isFinite(a)) g[key].amt += a;
+    if (meas.length > 1) { var c = Number(r[meas[1]]); if (isFinite(c)) g[key].cnt += c; }
+    g[key].rows.push(ri);
+  });
+  var total = ['in', 'out', 'other'].reduce(function (s, k) { return s + (g[k] ? g[k].amt : 0); }, 0);
+  if (!total) return { error: T.empty };
+  return { g: g, total: total };
+}
+
+function money(v) {
+  var a = Math.abs(v), o = { maximumFractionDigits: 1 };
+  if (a >= 1e9) return [(v / 1e9).toLocaleString('en-US', o), T.bn];
+  if (a >= 1e6) return [(v / 1e6).toLocaleString('en-US', o), T.mn];
+  if (a >= 1e4) return [(v / 1e3).toLocaleString('en-US', o), T.th];
+  return [Math.round(v).toLocaleString('en-US'), ''];
+}
+function pct(v, t) { return Math.round(v / t * 100) + '%'; }
+
+function render(animate) {
+  var m = state.m; if (!m) return;
+  var segs = [['in', T.inn, 'var(--green)'], ['out', T.out, 'var(--gold)'], ['other', T.other, 'var(--grey)']].filter(function (s) { return m.g[s[0]] && m.g[s[0]].amt > 0; });
+
+  // الجملة الملخصة / summary sentence
+  var gi = m.g['in'], go = m.g['out'];
+  $('summary').innerHTML = gi && go && go.amt > 0 ? T.more(Math.round(gi.amt / go.amt * 10) / 10) : '';
+
+  var bar = $('bar'); bar.innerHTML = ''; bar.className = (animate ? 'anim' : '') + (state.sel ? ' dim' : '');
+  bar.setAttribute('aria-label', segs.map(function (s) { return s[1] + ' ' + pct(m.g[s[0]].amt, m.total); }).join('، '));
+  var cards = $('cards'); cards.innerHTML = '';
+
+  segs.forEach(function (s, i) {
+    var d = m.g[s[0]], share = d.amt / m.total;
+    var seg = document.createElement('div'); seg.className = 'seg' + (state.sel === s[0] ? ' on' : '');
+    seg.style.flex = d.amt + ' 1 0'; seg.style.background = s[2];
+    if (animate) seg.style.animationDelay = (i * 120) + 'ms';
+    if (share >= 0.12) seg.innerHTML = '<span></span><small></small>';
+    if (share >= 0.12) { seg.querySelector('span').textContent = pct(d.amt, m.total); seg.querySelector('small').textContent = s[1]; }
+    else if (share >= 0.05) seg.textContent = pct(d.amt, m.total);
+    seg.addEventListener('mousemove', function (ev) { tip(ev, s[1], d, m.total); });
+    seg.addEventListener('mouseleave', function () { $('tip').style.opacity = 0; });
+    seg.onclick = function (ev) { ev.stopPropagation(); select(s[0]); };
+    bar.appendChild(seg);
+
+    var c = document.createElement('button'); c.type = 'button'; c.className = 'card' + (state.sel === s[0] ? ' on' : '');
+    var mo = money(d.amt);
+    c.innerHTML = '<i></i><div><div class="k"></div><div class="v"><span></span><small></small></div><div class="n"></div></div>';
+    c.querySelector('i').style.background = s[2];
+    c.querySelector('.k').textContent = s[1] + ' (' + (s[0] === 'in' ? IN : s[0] === 'out' ? OUT : T.other) + ')';
+    c.querySelector('.v span').textContent = mo[0];
+    c.querySelector('.v small').textContent = (mo[1] ? mo[1] + ' ' : '') + T.unit;
+    c.querySelector('.n').textContent = (d.hasCnt ? Math.round(d.cnt).toLocaleString('en-US') + ' ' + T.tx + ' · ' : '') + pct(d.amt, m.total) + ' ' + T.share;
+    c.onclick = function (ev) { ev.stopPropagation(); select(s[0]); };
+    cards.appendChild(c);
+  });
+}
+
+function tip(ev, label, d, total) {
+  var t = $('tip'), mo = money(d.amt);
+  t.innerHTML = '<b></b><div></div><div></div>';
+  t.querySelector('b').textContent = label;
+  t.querySelectorAll('div')[0].textContent = mo[0] + ' ' + mo[1] + ' ' + T.unit + ' (' + pct(d.amt, total) + ')';
+  t.querySelectorAll('div')[1].textContent = d.hasCnt ? Math.round(d.cnt).toLocaleString('en-US') + ' ' + T.tx : '';
+  t.style.opacity = 1;
+  var w = t.offsetWidth, h = t.offsetHeight;
+  t.style.left = Math.min(Math.max(6, ev.clientX - w / 2), innerWidth - w - 6) + 'px';
+  t.style.top = (ev.clientY - h - 12 < 6 ? ev.clientY + 16 : ev.clientY - h - 12) + 'px';
+}
+
+function select(k) {
+  state.sel = state.sel === k ? null : k;
+  var rows = state.sel ? state.m.g[k].rows : [];
+  post({ resultName: state.resultName, selections: rows.map(function (r) { return { row: r }; }) });
+  render(false);
+}
+document.addEventListener('click', function () { if (state.sel) { state.sel = null; post({ resultName: state.resultName, selections: [] }); render(false); } });
+var rt; window.addEventListener('resize', function () { clearTimeout(rt); rt = setTimeout(function () { render(false); }, 100); });
+function msg(t) { $('msg').textContent = t; $('msg').style.display = 'flex'; }
+
+if (inVA) msg(T.wait);
+else window.postMessage({ resultName: 'preview',
+  columns: [{ name: 'd', label: 'اتجاه العملية', type: 'string' }, { name: 'a', label: 'اجمالي الحركات', type: 'number' }, { name: 'n', label: 'عدد العمليات', type: 'number' }],
+  data: [['دائن', 99717025, 397], ['مدين', 55935727.5, 146]] }, '*');
+</script>
+</body>
+</html>
