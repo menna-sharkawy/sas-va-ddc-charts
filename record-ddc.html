@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Record card – SAS VA DDC</title>
+<!--
+  SAS Visual Analytics – Data-Driven Content (DDC)
+  عرض السجل بشكل منقول (Transposed): اسم العمود بجانب قيمته.
+
+  Roles → Variables: أسند أي أعمدة تريد عرضها، بالترتيب الذي تريده.
+    - أول عمود يصبح عنوان البطاقة (مثال: رقم البلاغ)
+    - النصوص الطويلة (مثل الوصف والسبب) تأخذ عرض البطاقة كاملًا تلقائيًا
+    - عند وجود أكثر من سجل: أزرار للتنقل «السابق / التالي»
+
+  إعدادات من الرابط (اختيارية):
+    ?cols=2        عدد الأعمدة للحقول القصيرة (1 أو 2 أو 3)
+    &title=0       إخفاء عنوان البطاقة (أول عمود يظهر كحقل عادي)
+    &wide=وصف البلاغ,سبب البلاغ   أسماء حقول تُعرض بعرض كامل دائمًا
+
+  الخط: Almarai من مجلد fonts/ بجانب الملف أو من Google Fonts.
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Almarai:wght@400;700;800&display=swap" rel="stylesheet">
+<style>
+  @font-face{font-family:'Almarai Local';font-weight:400;src:url('fonts/Almarai-Regular.ttf') format('truetype')}
+  @font-face{font-family:'Almarai Local';font-weight:700;src:url('fonts/Almarai-Bold.ttf') format('truetype')}
+  @font-face{font-family:'Almarai Local';font-weight:800;src:url('fonts/Almarai-ExtraBold.ttf') format('truetype')}
+  :root{ --green:#1F5B3A; --gold:#B8955A; --ink:#1A1F1C; --ink-2:#4A524D; --muted:#6B736E; --line:#E6E9E6; --soft:#F6F8F6;
+         --font:'Almarai','Almarai Local','IBM Plex Sans Arabic','Segoe UI',Tahoma,sans-serif; }
+  html,body{margin:0;height:100%;background:#FFFFFF;color:var(--ink);font-family:var(--font)}
+  body{overflow:auto}
+  #wrap{box-sizing:border-box;padding:14px 18px 18px;display:flex;flex-direction:column;gap:14px;min-height:100%}
+  header{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding-bottom:12px;border-bottom:1px solid var(--line)}
+  .ttl{display:flex;flex-direction:column;gap:3px;padding-right:12px;border-right:4px solid var(--gold);min-width:0}
+  .ttl .k{font-size:12px;color:var(--muted)}
+  .ttl .v{font-size:20px;font-weight:800;color:var(--green);direction:ltr;unicode-bidi:plaintext;text-align:right;word-break:break-all}
+  nav{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--ink-2)}
+  nav button{min-width:36px;height:36px;border:1px solid #D5DAD6;background:#fff;border-radius:8px;cursor:pointer;font:inherit;font-size:16px;color:var(--green)}
+  nav button:disabled{opacity:.35;cursor:default}
+  nav b{font-variant-numeric:tabular-nums}
+  #grid{display:grid;grid-template-columns:repeat(var(--cols,2),minmax(0,1fr));gap:0 28px}
+  .f{display:grid;grid-template-columns:minmax(110px,38%) 1fr;gap:12px;padding:11px 0;border-bottom:1px solid var(--line);align-items:start}
+  .f .k{font-size:13px;color:var(--muted);font-weight:700}
+  .f .v{font-size:14px;color:var(--ink);line-height:1.7;word-break:break-word;unicode-bidi:plaintext;text-align:right}
+  .f.wide{grid-column:1/-1;grid-template-columns:1fr;gap:6px}
+  .f.wide .v{background:var(--soft);border-radius:8px;padding:10px 12px;white-space:pre-wrap}
+  .empty{color:#9AA39E}
+  .pill{display:inline-block;font-size:12.5px;font-weight:700;border-radius:999px;padding:3px 12px}
+  #msg{position:fixed;inset:0;display:none;align-items:center;justify-content:center;text-align:center;color:var(--muted);font-size:13.5px;line-height:1.8;padding:20px;white-space:pre-line;background:#fff}
+  @media (max-width:560px){ #grid{grid-template-columns:1fr} .f{grid-template-columns:1fr;gap:4px} }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <header id="head" hidden>
+    <div class="ttl"><span class="k" id="hk"></span><span class="v" id="hv"></span></div>
+    <nav id="nav" aria-label="التنقل بين السجلات">
+      <button type="button" id="prev" aria-label="السجل السابق">›</button>
+      <span><b id="pos">1</b> من <b id="cnt">1</b></span>
+      <button type="button" id="next" aria-label="السجل التالي">‹</button>
+    </nav>
+  </header>
+  <div id="grid"></div>
+</div>
+<div id="msg"></div>
+
+<script>
+/* ============================ الإعدادات ============================ */
+var qs = new URLSearchParams(location.search);
+var CONFIG = {
+  cols: Math.min(3, Math.max(1, Number(qs.get('cols')) || 2)),
+  useTitle: qs.get('title') !== '0',
+  wide: (qs.get('wide') || '').split(',').map(function (s) { return s.trim(); }).filter(Boolean),
+  wideChars: 60,               // النص الأطول من هذا يُعرض بعرض كامل
+  emptyText: '—',
+  locale: 'en-US',
+  dateLocale: 'ar-SA-u-ca-gregory-nu-latn',
+  // ألوان الحالات (تُطبّق على أي عمود اسمه يحتوي «حالة»)
+  status: {
+    'مفتوح':   ['#1F5B3A', '#E3EFE7'], 'تحت الإجراء': ['#1F5B3A', '#E3EFE7'],
+    'محال':    ['#7A5A22', '#F4ECDD'], 'محالة': ['#7A5A22', '#F4ECDD'],
+    'مغلق':    ['#4A524D', '#ECEEEC'], 'محفوظ': ['#4A524D', '#ECEEEC'], 'محفوظة': ['#4A524D', '#ECEEEC'],
+    'مرفوض':   ['#8E3328', '#F6E4E1']
+  }
+};
+document.documentElement.style.setProperty('--cols', CONFIG.cols);
+var DEBUG = qs.get('debug') === '1';
+var inVA = window.parent && window.parent !== window;
+var state = { resultName: null, cols: [], rows: [], i: 0 };
+var $ = function (id) { return document.getElementById(id); };
+
+/* ======================= الاتصال مع SAS VA ======================= */
+window.addEventListener('message', function (e) {
+  var d = e.data;
+  if (typeof d === 'string') { try { d = JSON.parse(d); } catch (x) { return; } }
+  if (!d || typeof d !== 'object' || !d.hasOwnProperty('data')) return;
+  if (DEBUG) console.log('DDC payload', d);
+  state.resultName = d.resultName;
+  state.cols = Array.isArray(d.columns) ? d.columns : [];
+  var rows = Array.isArray(d.data) ? d.data : [];
+  if (rows.length && !Array.isArray(rows[0])) rows = rows.map(function (o) { return state.cols.map(function (c) { return o[c.name]; }); });
+  state.rows = rows; state.i = 0;
+  if (!state.cols.length) return showMessage('أسند الأعمدة التي تريد عرضها في Roles → Variables');
+  if (!rows.length) return showMessage('لا يوجد سجل مطابق للمرشحات الحالية');
+  $('msg').style.display = 'none';
+  render();
+});
+function post(msg) {
+  if (!inVA || !state.resultName) return;
+  var t = '*'; try { if (document.referrer) t = new URL(document.referrer).origin; } catch (x) {}
+  window.parent.postMessage(msg, t);
+}
+
+/* ============================ التنسيق ============================ */
+var SAS_EPOCH = Date.UTC(1960, 0, 1);
+function isDateCol(c) {
+  var t = String(c.type || '').toLowerCase();
+  var f = String(c.format && (c.format.name || c.format.formatString) || '').toUpperCase();
+  return /date|time/.test(t) || /DATE|DTDATE|DATETIME|DDMMYY|MMDDYY|YYMMDD|NLDAT|MONYY|WEEKDATE|WORDDATE/.test(f);
+}
+function fmtValue(v, c) {
+  if (v === null || v === undefined || v === '' || (typeof v === 'number' && isNaN(v))) return null;
+  if (typeof v === 'number' && isDateCol(c)) {
+    var f = String(c.format && (c.format.name || c.format.formatString) || '').toUpperCase();
+    var isDT = /DATETIME|DTDATE|NLDATM/.test(f) || Math.abs(v) > 1e6;
+    var u = new Date(SAS_EPOCH + (isDT ? v * 1000 : v * 86400000));
+    var d = new Date(u.getUTCFullYear(), u.getUTCMonth(), u.getUTCDate(), u.getUTCHours(), u.getUTCMinutes());
+    var o = { day: 'numeric', month: 'long', year: 'numeric' };
+    if (isDT && (d.getHours() || d.getMinutes())) { o.hour = '2-digit'; o.minute = '2-digit'; o.hour12 = false; }
+    try { return d.toLocaleString(CONFIG.dateLocale, o); } catch (x) { return d.toISOString().slice(0, 10); }
+  }
+  if (typeof v === 'number') return v.toLocaleString(CONFIG.locale, { maximumFractionDigits: 2 });
+  return String(v).trim();
+}
+
+/* ============================ العرض ============================ */
+function render() {
+  var cols = state.cols, row = state.rows[state.i], n = state.rows.length;
+  var start = 0;
+
+  // العنوان = أول عمود
+  var head = $('head');
+  if (CONFIG.useTitle) {
+    $('hk').textContent = cols[0].label || cols[0].name;
+    $('hv').textContent = fmtValue(row[0], cols[0]) || CONFIG.emptyText;
+    start = 1;
+  } else { $('hk').textContent = ''; $('hv').textContent = ''; }
+  $('nav').style.display = n > 1 ? '' : 'none';
+  head.hidden = !CONFIG.useTitle && n <= 1;
+  $('pos').textContent = (state.i + 1).toLocaleString(CONFIG.locale);
+  $('cnt').textContent = n.toLocaleString(CONFIG.locale);
+  $('prev').disabled = state.i === 0;
+  $('next').disabled = state.i === n - 1;
+
+  // الحقول
+  var grid = $('grid'); grid.innerHTML = '';
+  for (var i = start; i < cols.length; i++) {
+    var c = cols[i], label = c.label || c.name, val = fmtValue(row[i], c);
+    var f = document.createElement('div'); f.className = 'f';
+    var isWide = CONFIG.wide.indexOf(label) >= 0 || (val && val.length > CONFIG.wideChars && CONFIG.cols > 1) || (val && /\n/.test(val));
+    if (isWide) f.classList.add('wide');
+    var k = document.createElement('div'); k.className = 'k'; k.textContent = label;
+    var v = document.createElement('div'); v.className = 'v';
+    if (val === null) { v.textContent = CONFIG.emptyText; v.classList.add('empty'); }
+    else if (/حالة|status/i.test(label) && CONFIG.status[val]) {
+      var p = document.createElement('span'); p.className = 'pill'; p.textContent = val;
+      p.style.color = CONFIG.status[val][0]; p.style.background = CONFIG.status[val][1]; v.appendChild(p);
+    } else v.textContent = val;
+    f.append(k, v); grid.appendChild(f);
+  }
+}
+
+function go(step) {
+  var j = state.i + step; if (j < 0 || j >= state.rows.length) return;
+  state.i = j; render();
+  // اختيار السجل الحالي في VA (لربط الكائنات الأخرى عند الحاجة)
+  post({ resultName: state.resultName, selections: [{ row: state.i }] });
+}
+$('prev').onclick = function () { go(-1); };
+$('next').onclick = function () { go(1); };
+document.addEventListener('keydown', function (e) {
+  if (state.rows.length < 2) return;
+  if (e.key === 'ArrowRight') go(-1); else if (e.key === 'ArrowLeft') go(1);
+});
+
+function showMessage(t) { $('msg').textContent = t; $('msg').style.display = 'flex'; }
+
+if (inVA) showMessage('في انتظار البيانات من SAS VA…');
+else window.postMessage({ resultName: 'preview',
+  columns: [
+    { name: 'id', label: 'رقم البلاغ', type: 'string' },
+    { name: 'st', label: 'حالة البلاغ', type: 'string' },
+    { name: 'dt', label: 'تاريخ البلاغ', type: 'string' },
+    { name: 'tp', label: 'نوع البلاغ', type: 'string' },
+    { name: 'cu', label: 'اسم العميل الرئيسي', type: 'string' },
+    { name: 'br', label: 'فرع الجهة المبلغة', type: 'string' },
+    { name: 'ds', label: 'وصف البلاغ', type: 'string' },
+    { name: 'rs', label: 'سبب البلاغ', type: 'string' }],
+  data: [
+    ['RR2026_20260927_0001', 'مفتوح', '27 سبتمبر 2026', 'بلاغ عملية مشبوهة (STR)', '[اسم العميل]', '[اسم الفرع]',
+     'حساب يستقبل تحويلات متكررة من أفراد غير مرتبطين — نص توضيحي للمعاينة فقط.',
+     'نص توضيحي لسبب البلاغ يوضح كيف يظهر النص الطويل بعرض كامل داخل البطاقة.'],
+    ['RR2026_20260927_0002', 'مغلق', '27 سبتمبر 2026', 'بلاغ نشاط مشبوه (SAR)', '[اسم العميل]', '[اسم الفرع]', 'سجل ثانٍ للمعاينة.', null]
+  ] }, '*');
+</script>
+</body>
+</html>
